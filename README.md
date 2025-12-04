@@ -225,23 +225,64 @@ cache_add('key', 'value', 3600);
 
 ### Clear Cache
 
-```php
-use MonkeysLegion\Cache\Commands\CacheClearCommand;
+```bash
+# Clear default store
+php ml cache:clear
 
-$command = new CacheClearCommand($manager);
-$command->handle(); // Clear default store
-$command->handle('redis'); // Clear specific store
-$command->handle(null, ['users']); // Clear by tags
+# Clear specific store
+php ml cache:clear --store=redis
+
+# Clear by tags
+php ml cache:clear --tags=users,posts
+```
+
+### Get Value
+
+```bash
+# Get value
+php ml cache:get user:123
+
+# Get from specific store
+php ml cache:get user:123 --store=redis
+
+# Get as JSON
+php ml cache:get user:123 --format=json
+```
+
+### Set Value
+
+```bash
+# Set value
+php ml cache:set user:123 "John Doe"
+
+# Set with TTL (seconds)
+php ml cache:set config:debug true --ttl=3600
+
+# Set in specific store
+php ml cache:set user:data '{"name":"John"}' --store=redis
 ```
 
 ### Forget Key
 
-```php
-use MonkeysLegion\Cache\Commands\CacheForgetCommand;
+```bash
+# Delete key
+php ml cache:forget user:123
 
-$command = new CacheForgetCommand($manager);
-$command->handle('key'); // Delete from default store
-$command->handle('key', 'redis'); // Delete from specific store
+# Delete multiple keys
+php ml cache:forget user:123,user:456
+
+# Delete from specific store
+php ml cache:forget user:123 --store=redis
+```
+
+### Cache Statistics
+
+```bash
+# Show stats for default store
+php ml cache:stats
+
+# Show stats for specific store
+php ml cache:stats --store=redis
 ```
 
 ## Cache Drivers

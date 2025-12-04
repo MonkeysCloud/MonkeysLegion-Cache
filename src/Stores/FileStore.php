@@ -75,9 +75,10 @@ class FileStore extends CacheStore
         $expiration = $seconds === null ? null : time() + $seconds;
 
         $payload = $this->serialize([
-            'value' => $value,
+            'value'      => $value,
             'expiration' => $expiration,
-            'time' => time()
+            'time'       => time(),
+            'tags'       => $this->tags ?? [],
         ]);
 
         $path = $this->path($key);
@@ -114,7 +115,12 @@ class FileStore extends CacheStore
      */
     public function clear(): bool
     {
-        $this->clearDirectory($this->directory);
+        if (empty($this->tags)) {
+            $this->clearDirectory($this->directory);
+            return true;
+        }
+        $this->clearDirectoryByTags($this->directory, $this->tags);
+
         return true;
     }
 
@@ -257,4 +263,50 @@ class FileStore extends CacheStore
             }
         }
     }
+
+    /**
+     * Recursively clear only entries matching the given tags.
+     *
+     * @param  string    $directory
+     * @param  string[]  $tags
+     * @return void
+     */
+    private function clearDirectoryByTags(string $directory, array $tags): void
+    {
+        if (!is_dir($directory)) {
+            return;
+        }
+
+        $items = new \FilesystemIterator($directory);
+
+        foreach ($items as $item) {
+            if ($item->isDir() && !$item->isLink()) {
+                // Recurse into subdirectories
+                $this->clearDirectoryByTags($item->getPathname(), $tags);
+
+                // Optionally remove empty directories after cleaning
+                @rmdir($item->getPathname());
+                continue;
+            }
+
+            // For files: read payload and check tags
+            $contents = @file_get_contents($item->getPathname());
+            if ($contents === false) {
+                continue;
+            }
+
+            $payload = $this->unserialize($contents);
+            if (!is_array($payload)) {
+                continue;
+            }
+
+            $payloadTags = $payload['tags'] ?? [];
+
+            // If the cached item has any of the current tags, delete it
+            if (!empty($payloadTags) && array_intersect($payloadTags, $tags)) {
+                @unlink($item->getPathname());
+            }
+        }
+    }
+
 }
