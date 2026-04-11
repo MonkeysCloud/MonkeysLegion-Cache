@@ -102,9 +102,15 @@ abstract class CacheStore implements CacheStoreInterface
 
     public function touch(string $key, \DateInterval|int $ttl): bool
     {
-        $value = $this->get($key);
+        if (!$this->has($key)) {
+            return false;
+        }
 
-        if ($value === null) {
+        // Use a sentinel to distinguish null values from misses
+        $sentinel = new \stdClass();
+        $value = $this->get($key, $sentinel);
+
+        if ($value === $sentinel) {
             return false;
         }
 
@@ -118,7 +124,7 @@ abstract class CacheStore implements CacheStoreInterface
         [$staleTtl, $freshTtl] = $ttl;
 
         // Store internal CacheEntry with metadata
-        $entryKey = '__flex:' . $key;
+        $entryKey = '__flex.' . $key;
         $raw      = $this->getRaw($entryKey);
 
         if ($raw !== null) {
@@ -337,9 +343,11 @@ abstract class CacheStore implements CacheStoreInterface
      */
     protected function getRaw(string $key): ?string
     {
-        $value = $this->get($key);
+        // Default: serialize the result via get(). Drivers override for direct raw access.
+        $sentinel = new \stdClass();
+        $value = $this->get($key, $sentinel);
 
-        return $value !== null ? $this->serializer->serialize($value) : null;
+        return $value !== $sentinel ? $this->serializer->serialize($value) : null;
     }
 
     /**

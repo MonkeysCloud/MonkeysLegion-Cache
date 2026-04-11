@@ -62,18 +62,19 @@ final class ChainStore extends CacheStore
     public function get(string $key, mixed $default = null): mixed
     {
         foreach ($this->stores as $i => $store) {
-            $value = $store->get($key);
-
-            if ($value !== null) {
-                $this->statHits++;
-
-                // Promote to faster layers that missed
-                for ($j = 0; $j < $i; $j++) {
-                    $this->stores[$j]->set($key, $value);
-                }
-
-                return $value;
+            if (!$store->has($key)) {
+                continue;
             }
+
+            $value = $store->get($key, $default);
+            $this->statHits++;
+
+            // Promote to faster layers that missed
+            for ($j = 0; $j < $i; $j++) {
+                $this->stores[$j]->set($key, $value);
+            }
+
+            return $value;
         }
 
         $this->statMisses++;

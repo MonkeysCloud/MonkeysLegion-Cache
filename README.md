@@ -9,7 +9,7 @@
 ## Installation
 
 ```bash
-composer require monkeyscloud/monkeyslegion-cache:^2.1
+composer require monkeyscloud/monkeyslegion-cache:^2.0
 ```
 
 ## Features

@@ -95,7 +95,7 @@ final class CacheManager
      * Register a custom driver factory.
      *
      * @param string   $driver   Driver name.
-     * @param \Closure $factory  Factory receiving (array $config): CacheStoreInterface.
+     * @param \Closure $factory  Factory receiving (array $config, CacheSerializerInterface $serializer): CacheStoreInterface.
      */
     public function extend(string $driver, \Closure $factory): void
     {
@@ -238,11 +238,13 @@ final class CacheManager
     {
         $type = $config['serializer'] ?? 'php';
 
+        $allowedClasses = $config['allowed_classes'] ?? true;
+
         $serializer = match ($type) {
-            'php'      => new PhpSerializer(),
+            'php'      => new PhpSerializer($allowedClasses),
             'json'     => new JsonSerializer(),
             'igbinary' => new IgbinarySerializer(),
-            default    => new PhpSerializer(),
+            default    => new PhpSerializer($allowedClasses),
         };
 
         // Wrap with encryption if configured

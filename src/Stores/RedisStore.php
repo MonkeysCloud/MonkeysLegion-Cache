@@ -58,7 +58,13 @@ final class RedisStore extends CacheStore
 
         $this->statWrites++;
 
-        if ($seconds === null || $seconds === 0) {
+        // TTL of 0 means expire immediately (PSR-16)
+        if ($seconds === 0) {
+            $this->redis->del($prepared);
+            return true;
+        }
+
+        if ($seconds === null) {
             return $this->redis->set($prepared, $serialized);
         }
 
@@ -136,7 +142,10 @@ final class RedisStore extends CacheStore
             $prepared   = $this->prepareKey($key);
             $serialized = $this->serializer->serialize($value);
 
-            if ($seconds === null || $seconds === 0) {
+            // TTL of 0 means expire immediately (PSR-16)
+            if ($seconds === 0) {
+                $pipeline->del($prepared);
+            } elseif ($seconds === null) {
                 $pipeline->set($prepared, $serialized);
             } else {
                 $pipeline->setex($prepared, $seconds, $serialized);

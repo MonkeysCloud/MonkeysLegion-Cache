@@ -163,7 +163,8 @@ final class TaggedCache
     {
         foreach ($this->tags as $tag) {
             $versionKey = $this->tagVersionKey($tag);
-            $this->store->increment($versionKey);
+            // Use set() with a new unique version to avoid increment/serialization conflicts
+            $this->store->set($versionKey, (string) hrtime(true));
         }
 
         return true;
@@ -186,7 +187,7 @@ final class TaggedCache
     public static function invalidateTags(CacheStoreInterface $store, array $tags): bool
     {
         foreach ($tags as $tag) {
-            $store->increment('mltagv.' . $tag);
+            $store->set('mltagv.' . $tag, (string) hrtime(true));
         }
 
         return true;

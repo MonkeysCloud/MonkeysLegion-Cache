@@ -77,7 +77,14 @@ final class FileStore extends CacheStore
             return $default;
         }
 
-        $payload = $this->serializer->unserialize($contents);
+        try {
+            $payload = $this->serializer->unserialize($contents);
+        } catch (\Throwable) {
+            // Corrupt file — self-heal by removing it
+            @unlink($path);
+            $this->statMisses++;
+            return $default;
+        }
 
         if (!is_array($payload) || $this->isExpired($payload)) {
             @unlink($path);
@@ -145,7 +152,31 @@ final class FileStore extends CacheStore
 
     public function has(string $key): bool
     {
-        return $this->get($key) !== null;
+        $path = $this->path($key);
+
+        if (!file_exists($path)) {
+            return false;
+        }
+
+        $contents = @file_get_contents($path);
+
+        if ($contents === false) {
+            return false;
+        }
+
+        try {
+            $payload = $this->serializer->unserialize($contents);
+        } catch (\Throwable) {
+            @unlink($path);
+            return false;
+        }
+
+        if (!is_array($payload) || $this->isExpired($payload)) {
+            @unlink($path);
+            return false;
+        }
+
+        return true;
     }
 
     public function increment(string $key, int $value = 1): int|false
