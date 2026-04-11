@@ -45,18 +45,20 @@ final class FileStore extends CacheStore
             );
         }
 
-        $this->directory = rtrim($directory, '/');
+        $resolvedDir = rtrim($directory, '/');
 
-        if (!is_dir($this->directory)) {
-            mkdir($this->directory, 0o755, true);
+        if (!is_dir($resolvedDir)) {
+            mkdir($resolvedDir, 0o755, true);
         }
 
         // Verify the resolved real path matches the intended directory
-        $realPath = realpath($this->directory);
+        $realPath = realpath($resolvedDir);
 
-        if ($realPath !== false && $realPath !== $this->directory) {
-            $this->directory = $realPath;
+        if ($realPath !== false && $realPath !== $resolvedDir) {
+            $resolvedDir = $realPath;
         }
+
+        $this->directory = $resolvedDir;
     }
 
     public function get(string $key, mixed $default = null): mixed

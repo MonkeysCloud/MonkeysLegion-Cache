@@ -79,14 +79,4 @@ final class EncryptedSerializer implements CacheSerializerInterface
 
         return $this->inner->unserialize($plaintext);
     }
-
-    /**
-     * Wipe key material from memory on destruction.
-     */
-    public function __destruct()
-    {
-        if (extension_loaded('sodium')) {
-            sodium_memzero($this->key);
-        }
-    }
 }
