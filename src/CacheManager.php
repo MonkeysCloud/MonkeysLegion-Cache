@@ -102,6 +102,22 @@ final class CacheManager
         $this->customDrivers[$driver] = $factory;
     }
 
+    /**
+     * Remove a specific resolved store instance.
+     */
+    public function forgetDriver(string $name): void
+    {
+        unset($this->stores[$name]);
+    }
+
+    /**
+     * Remove all resolved store instances.
+     */
+    public function purge(): void
+    {
+        $this->stores = [];
+    }
+
     // ── Private resolution ─────────────────────────────────────
 
     private function resolve(string $name): CacheStoreInterface

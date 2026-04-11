@@ -33,7 +33,7 @@ final class EncryptedSerializer implements CacheSerializerInterface
      */
     public function __construct(
         private readonly CacheSerializerInterface $inner,
-        string $secret,
+        #[\SensitiveParameter] string $secret,
     ) {
         if (!extension_loaded('sodium')) {
             throw new \RuntimeException(
@@ -80,4 +80,13 @@ final class EncryptedSerializer implements CacheSerializerInterface
         return $this->inner->unserialize($plaintext);
     }
 
+    /**
+     * Wipe key material from memory on destruction.
+     */
+    public function __destruct()
+    {
+        if (extension_loaded('sodium')) {
+            sodium_memzero($this->key);
+        }
+    }
 }

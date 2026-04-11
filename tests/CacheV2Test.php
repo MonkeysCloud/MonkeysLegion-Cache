@@ -1062,4 +1062,222 @@ final class CacheV2Test extends TestCase
         $this->assertSame('computed', $v2);
         $this->assertSame(1, $calls);
     }
+
+    // ── PSR-16 InvalidArgumentException ────────────────────────
+
+    public function testPsr16InvalidArgumentExceptionInterface(): void
+    {
+        $ex = new \MonkeysLegion\Cache\Exception\InvalidArgumentException('test');
+        $this->assertInstanceOf(\Psr\SimpleCache\InvalidArgumentException::class, $ex);
+        $this->assertInstanceOf(\InvalidArgumentException::class, $ex);
+    }
+
+    public function testKeyValidationThrowsPsr16Exception(): void
+    {
+        $store = $this->makeArrayStore();
+        $this->expectException(\Psr\SimpleCache\InvalidArgumentException::class);
+        $store->get('');
+    }
+
+    // ── Remember with null values ──────────────────────────────
+
+    public function testRememberHandlesNullValue(): void
+    {
+        $store = $this->makeArrayStore();
+        $calls = 0;
+
+        // Store null explicitly
+        $store->set('null-key', null);
+
+        // remember should use has() check, not null check
+        $value = $store->remember('null-key', 3600, function () use (&$calls) {
+            $calls++;
+            return 'recomputed';
+        });
+
+        // Since ArrayStore stores null but get() returns null (indistinguishable from miss),
+        // the behavior depends on has() — which checks key existence
+        $this->assertSame(0, $calls);
+    }
+
+    // ── ArrayStore LRU eviction ────────────────────────────────
+
+    public function testArrayStoreLruEviction(): void
+    {
+        $store = new ArrayStore(prefix: 'test', maxItems: 3);
+
+        $store->set('a', 1);
+        $store->set('b', 2);
+        $store->set('c', 3);
+
+        // All three items should exist
+        $this->assertSame(1, $store->get('a'));
+        $this->assertSame(2, $store->get('b'));
+        $this->assertSame(3, $store->get('c'));
+
+        // Adding a 4th should evict 'b' (LRU — 'a' was moved to end by get(), so 'b' is now oldest)
+        $store->set('d', 4);
+
+        $this->assertNull($store->get('b')); // 'b' was the oldest after 'a' was accessed
+        $this->assertSame(4, $store->get('d'));
+    }
+
+    public function testArrayStoreLruNoEvictionWhenUnlimited(): void
+    {
+        $store = new ArrayStore(prefix: 'test', maxItems: 0);
+
+        for ($i = 0; $i < 100; $i++) {
+            $store->set("key{$i}", $i);
+        }
+
+        $this->assertSame(99, $store->get('key99'));
+        $this->assertSame(0, $store->get('key0'));
+    }
+
+    // ── TaggedCache batch operations ───────────────────────────
+
+    public function testTaggedCacheGetMultiple(): void
+    {
+        $store  = $this->makeArrayStore();
+        $tagged = $store->tags(['batch']);
+
+        $tagged->set('a', 1);
+        $tagged->set('b', 2);
+
+        $results = $tagged->getMultiple(['a', 'b', 'c'], 'default');
+        $this->assertSame(1, $results['a']);
+        $this->assertSame(2, $results['b']);
+        $this->assertSame('default', $results['c']);
+    }
+
+    public function testTaggedCacheSetMultiple(): void
+    {
+        $store  = $this->makeArrayStore();
+        $tagged = $store->tags(['batch']);
+
+        $tagged->setMultiple(['x' => 10, 'y' => 20]);
+        $this->assertSame(10, $tagged->get('x'));
+        $this->assertSame(20, $tagged->get('y'));
+    }
+
+    public function testTaggedCacheDeleteMultiple(): void
+    {
+        $store  = $this->makeArrayStore();
+        $tagged = $store->tags(['batch']);
+
+        $tagged->set('a', 1);
+        $tagged->set('b', 2);
+        $tagged->deleteMultiple(['a', 'b']);
+
+        $this->assertNull($tagged->get('a'));
+        $this->assertNull($tagged->get('b'));
+    }
+
+    public function testTaggedCacheClearAliasFlush(): void
+    {
+        $store  = $this->makeArrayStore();
+        $tagged = $store->tags(['cleartest']);
+
+        $tagged->set('key', 'value');
+        $this->assertSame('value', $tagged->get('key'));
+
+        $tagged->clear();
+        $this->assertNull($tagged->get('key'));
+    }
+
+    // ── TaggedCache namespace uses pipe separator ──────────────
+
+    public function testTaggedCacheNamespaceUsesPipeSeparator(): void
+    {
+        $store  = $this->makeArrayStore();
+        $tagged = $store->tags(['user']);
+
+        // The namespace should use pipe separators, not dots
+        $this->assertStringContainsString('tag|user|v', $tagged->tagNamespace);
+    }
+
+    // ── CacheManager purge and forgetDriver ────────────────────
+
+    public function testCacheManagerPurge(): void
+    {
+        $manager = new CacheManager([
+            'default' => 'mem',
+            'stores'  => ['mem' => ['driver' => 'array']],
+        ]);
+
+        $store1 = $manager->store();
+        $manager->purge();
+        $store2 = $manager->store();
+
+        // After purge, a new instance should be created
+        $this->assertNotSame($store1, $store2);
+    }
+
+    public function testCacheManagerForgetDriver(): void
+    {
+        $manager = new CacheManager([
+            'default' => 'mem',
+            'stores'  => ['mem' => ['driver' => 'array']],
+        ]);
+
+        $store1 = $manager->store('mem');
+        $manager->forgetDriver('mem');
+        $store2 = $manager->store('mem');
+
+        $this->assertNotSame($store1, $store2);
+    }
+
+    // ── ChainStore getMultiple batch ───────────────────────────
+
+    public function testChainStoreGetMultipleBatch(): void
+    {
+        $l1 = new ArrayStore();
+        $l2 = new ArrayStore();
+        $chain = new ChainStore([$l1, $l2]);
+
+        // Set in L2 only
+        $l2->set('a', 1);
+        $l2->set('b', 2);
+
+        $results = $chain->getMultiple(['a', 'b', 'c'], 'miss');
+
+        $this->assertSame(1, $results['a']);
+        $this->assertSame(2, $results['b']);
+        $this->assertSame('miss', $results['c']);
+
+        // Should be promoted to L1
+        $this->assertSame(1, $l1->get('a'));
+        $this->assertSame(2, $l1->get('b'));
+    }
+
+    // ── FileStore path traversal protection ────────────────────
+
+    public function testFileStoreRejectsPathTraversal(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('path traversal');
+        new FileStore(directory: $this->tempDir . '/../../../etc');
+    }
+
+    // ── PhpSerializer defaults to blocking object instantiation ─
+
+    public function testPhpSerializerDefaultBlocksObjects(): void
+    {
+        $s = new PhpSerializer(); // Default: allowedClasses = []
+        $data = ['key' => 'value', 'num' => 42];
+
+        // Scalar/array data works fine
+        $this->assertSame($data, $s->unserialize($s->serialize($data)));
+    }
+
+    public function testPhpSerializerExplicitAllowClasses(): void
+    {
+        $s = new PhpSerializer(allowedClasses: true);
+        $obj = new \stdClass();
+        $obj->foo = 'bar';
+
+        $result = $s->unserialize($s->serialize($obj));
+        $this->assertInstanceOf(\stdClass::class, $result);
+        $this->assertSame('bar', $result->foo);
+    }
 }

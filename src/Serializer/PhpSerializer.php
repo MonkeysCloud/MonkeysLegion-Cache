@@ -25,9 +25,10 @@ final class PhpSerializer implements CacheSerializerInterface
     /**
      * @param list<class-string>|true $allowedClasses Classes allowed during unserialize.
      *                                                 `true` = allow all (less secure).
+     *                                                 Default `[]` blocks all object instantiation.
      */
     public function __construct(
-        private readonly array|true $allowedClasses = true,
+        private readonly array|true $allowedClasses = [],
     ) {}
 
     public function serialize(mixed $value): string

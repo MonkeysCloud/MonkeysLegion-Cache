@@ -177,6 +177,45 @@ final class ChainStore extends CacheStore
         );
     }
 
+    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    {
+        $keyList = $keys instanceof \Traversable ? iterator_to_array($keys) : (array) $keys;
+        $results = array_fill_keys($keyList, $default);
+        $remaining = $keyList;
+
+        foreach ($this->stores as $i => $store) {
+            if ($remaining === []) {
+                break;
+            }
+
+            $foundKeys = [];
+            $foundValues = [];
+
+            foreach ($remaining as $key) {
+                if ($store->has($key)) {
+                    $value = $store->get($key);
+                    $results[$key] = $value;
+                    $foundKeys[] = $key;
+                    $foundValues[$key] = $value;
+                    $this->statHits++;
+                }
+            }
+
+            // Promote found values to faster layers that missed
+            if ($i > 0 && $foundValues !== []) {
+                for ($j = 0; $j < $i; $j++) {
+                    $this->stores[$j]->setMultiple($foundValues);
+                }
+            }
+
+            $remaining = array_values(array_diff($remaining, $foundKeys));
+        }
+
+        $this->statMisses += count($remaining);
+
+        return $results;
+    }
+
     /**
      * Get a specific cache layer by index.
      */

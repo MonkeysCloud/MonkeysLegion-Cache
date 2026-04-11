@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 namespace MonkeysLegion\Cache;
 
+use MonkeysLegion\Cache\Exception\InvalidArgumentException;
 use MonkeysLegion\Cache\Lock\LockInterface;
 use MonkeysLegion\Cache\Lock\ArrayLock;
 use MonkeysLegion\Cache\Serializer\CacheSerializerInterface;
@@ -55,10 +56,8 @@ abstract class CacheStore implements CacheStoreInterface
 
     public function remember(string $key, \DateInterval|int|null $ttl, \Closure $callback): mixed
     {
-        $value = $this->get($key);
-
-        if ($value !== null) {
-            return $value;
+        if ($this->has($key)) {
+            return $this->get($key);
         }
 
         $value = $callback();
@@ -69,10 +68,8 @@ abstract class CacheStore implements CacheStoreInterface
 
     public function rememberForever(string $key, \Closure $callback): mixed
     {
-        $value = $this->get($key);
-
-        if ($value !== null) {
-            return $value;
+        if ($this->has($key)) {
+            return $this->get($key);
         }
 
         $value = $callback();
@@ -230,6 +227,7 @@ abstract class CacheStore implements CacheStoreInterface
 
     public function getMultiple(iterable $keys, mixed $default = null): iterable
     {
+        $this->validateKeys($keys);
         $results = [];
 
         foreach ($keys as $key) {
@@ -244,6 +242,12 @@ abstract class CacheStore implements CacheStoreInterface
         $success = true;
 
         foreach ($values as $key => $value) {
+            if (!is_string($key)) {
+                throw new InvalidArgumentException(
+                    'Cache key must be a string, ' . get_debug_type($key) . ' given.',
+                );
+            }
+
             if (!$this->set($key, $value, $ttl)) {
                 $success = false;
             }
@@ -254,6 +258,7 @@ abstract class CacheStore implements CacheStoreInterface
 
     public function deleteMultiple(iterable $keys): bool
     {
+        $this->validateKeys($keys);
         $success = true;
 
         foreach ($keys as $key) {
@@ -270,17 +275,17 @@ abstract class CacheStore implements CacheStoreInterface
     /**
      * Build a prefixed cache key.
      *
-     * @throws \InvalidArgumentException If the key contains reserved characters.
+     * @throws InvalidArgumentException If the key contains reserved characters or is invalid.
      */
     protected function prepareKey(string $key): string
     {
         if ($key === '') {
-            throw new \InvalidArgumentException('Cache key must not be empty.');
+            throw new InvalidArgumentException('Cache key must not be empty.');
         }
 
         // PSR-16 reserved characters
         if (preg_match('/[{}()\/@:\\\\]/', $key)) {
-            throw new \InvalidArgumentException(
+            throw new InvalidArgumentException(
                 "Cache key [{$key}] contains reserved characters: {}()/\\@:",
             );
         }
@@ -289,7 +294,27 @@ abstract class CacheStore implements CacheStoreInterface
     }
 
     /**
+     * Validate an iterable of keys per PSR-16.
+     *
+     * @param iterable<string> $keys
+     * @throws InvalidArgumentException If any key is invalid.
+     */
+    protected function validateKeys(iterable $keys): void
+    {
+        foreach ($keys as $key) {
+            if (!is_string($key)) {
+                throw new InvalidArgumentException(
+                    'Cache key must be a string, ' . get_debug_type($key) . ' given.',
+                );
+            }
+        }
+    }
+
+    /**
      * Convert TTL to seconds.
+     *
+     * Per PSR-16: TTL of 0 or negative means the item should be deleted/expired.
+     * Returns 0 for such cases to signal immediate expiration.
      */
     protected function ttlToSeconds(\DateInterval|int|null $ttl): ?int
     {
@@ -298,7 +323,7 @@ abstract class CacheStore implements CacheStoreInterface
         }
 
         if ($ttl instanceof \DateInterval) {
-            return (int) (new \DateTime())->add($ttl)->format('U') - time();
+            return max(0, (int) (new \DateTime())->add($ttl)->format('U') - time());
         }
 
         return max(0, $ttl);
