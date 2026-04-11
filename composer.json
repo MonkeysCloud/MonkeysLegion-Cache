@@ -1,6 +1,6 @@
 {
     "name": "monkeyscloud/monkeyslegion-cache",
-    "description": "Cache package for MonkeysLegion Framework with multiple drivers support",
+    "description": "High-performance cache package for MonkeysLegion Framework with multiple drivers, atomic locks, encrypted serialization, and tiered caching",
     "type": "library",
     "license": "MIT",
     "authors": [
@@ -11,21 +11,22 @@
     ],
     "require": {
         "php": "^8.4",
-        "psr/simple-cache": "^3.0"
+        "psr/simple-cache": "^3.0",
+        "psr/log": "^3.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.0"
+        "phpunit/phpunit": "^11.0"
     },
     "suggest": {
-        "ext-redis": "Required to use Redis cache driver",
+        "ext-redis": "Required to use Redis cache driver and distributed locks",
         "ext-memcached": "Required to use Memcached cache driver",
-        "monkeyscloud/monkeyslegion-mlc": "For .mlc configuration file support with environment variables",
-        "monkeyscloud/monkeyslegion-cli": "For CLI commands"
+        "ext-igbinary": "For igbinary serialization (30-50% smaller payloads)",
+        "ext-sodium": "Required for encrypted cache serialization (GDPR/PCI)",
+        "monkeyscloud/monkeyslegion-mlc": "For .mlc configuration file support with environment variables"
     },
     "autoload": {
         "psr-4": {
-            "MonkeysLegion\\Cache\\": "src/",
-            "MonkeysLegion\\Cache\\CLI\\": "src/CLI/"
+            "MonkeysLegion\\Cache\\": "src/"
         },
         "files": [
             "src/helpers.php"
@@ -33,7 +34,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "1.0.x-dev"
+            "dev-2.1": "2.1.x-dev"
         }
     },
     "autoload-dev": {

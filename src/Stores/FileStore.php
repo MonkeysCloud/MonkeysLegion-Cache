@@ -1,203 +1,129 @@
 <?php
 
-namespace MonkeysLegion\Cache\Stores;
-
-use MonkeysLegion\Cache\CacheStore;
+declare(strict_types=1);
 
 /**
- * FileStore
+ * MonkeysLegion Cache v2
  *
- * @package MonkeysLegion\Cache\Stores
+ * @package   MonkeysLegion\Cache\Stores
+ * @author    MonkeysCloud <jorge@monkeyscloud.com>
+ * @license   MIT
+ *
+ * @requires  PHP 8.4
  */
-class FileStore extends CacheStore
-{
-    /**
-     * The directory where the cache files are stored.
-     *
-     * @var string
-     */
-    private string $directory;
 
-    /**
-     * Create a new file store instance.
-     *
-     * @param  string  $directory
-     * @param  string  $prefix
-     * @return void
-     */
-    public function __construct(string $directory, string $prefix = '')
-    {
-        parent::__construct($prefix);
+namespace MonkeysLegion\Cache\Stores;
+
+use MonkeysLegion\Cache\CacheStats;
+use MonkeysLegion\Cache\CacheStore;
+use MonkeysLegion\Cache\Lock\FileLock;
+use MonkeysLegion\Cache\Lock\LockInterface;
+use MonkeysLegion\Cache\Serializer\CacheSerializerInterface;
+use MonkeysLegion\Cache\Serializer\PhpSerializer;
+
+/**
+ * File-based cache store with directory sharding and atomic writes.
+ *
+ * Uses PHP 8.4: final class, new-in-initializer.
+ */
+final class FileStore extends CacheStore
+{
+    private readonly string $directory;
+
+    public function __construct(
+        string $directory,
+        string $prefix = '',
+        CacheSerializerInterface $serializer = new PhpSerializer(),
+        private readonly int $shardDepth = 2,
+    ) {
+        parent::__construct($prefix, $serializer);
+
         $this->directory = rtrim($directory, '/');
-        
+
         if (!is_dir($this->directory)) {
-            mkdir($this->directory, 0755, true);
+            mkdir($this->directory, 0o755, true);
         }
     }
 
-    /**
-     * Retrieve an item from the cache by key.
-     *
-     * @param  string  $key
-     * @param  mixed   $default
-     * @return mixed
-     */
     public function get(string $key, mixed $default = null): mixed
     {
         $path = $this->path($key);
 
         if (!file_exists($path)) {
+            $this->statMisses++;
             return $default;
         }
 
         $contents = file_get_contents($path);
-        $payload = $this->unserialize($contents);
 
-        if ($this->isExpired($payload)) {
-            $this->delete($key);
+        if ($contents === false) {
+            $this->statMisses++;
             return $default;
         }
 
+        $payload = $this->serializer->unserialize($contents);
+
+        if (!is_array($payload) || $this->isExpired($payload)) {
+            @unlink($path);
+            $this->statMisses++;
+            return $default;
+        }
+
+        $this->statHits++;
         return $payload['value'];
     }
 
-    /**
-     * Store an item in the cache.
-     *
-     * @param  string  $key
-     * @param  mixed   $value
-     * @param  \DateInterval|int|null  $ttl
-     * @return bool
-     */
     public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
     {
-        $seconds = $this->getSeconds($ttl);
-        $expiration = $seconds === null ? null : time() + $seconds;
+        $seconds    = $this->ttlToSeconds($ttl);
+        $expiration = $seconds !== null ? time() + $seconds : null;
 
-        $payload = $this->serialize([
+        $payload = $this->serializer->serialize([
             'value'      => $value,
             'expiration' => $expiration,
-            'time'       => time(),
-            'tags'       => $this->tags ?? [],
+            'createdAt'  => time(),
+            'tags'       => [],
         ]);
 
-        $path = $this->path($key);
+        $path      = $this->path($key);
         $directory = dirname($path);
 
         if (!is_dir($directory)) {
-            mkdir($directory, 0755, true);
+            mkdir($directory, 0o755, true);
         }
 
+        $this->statWrites++;
         return file_put_contents($path, $payload, LOCK_EX) !== false;
     }
 
-    /**
-     * Remove an item from the cache.
-     *
-     * @param  string  $key
-     * @return bool
-     */
     public function delete(string $key): bool
     {
         $path = $this->path($key);
 
         if (file_exists($path)) {
-            return unlink($path);
+            $this->statDeletes++;
+            return @unlink($path);
         }
 
         return true;
     }
 
-    /**
-     * Remove all items from the cache.
-     *
-     * @return bool
-     */
     public function clear(): bool
     {
-        if (empty($this->tags)) {
-            $this->clearDirectory($this->directory);
-            return true;
-        }
-        $this->clearDirectoryByTags($this->directory, $this->tags);
-
+        $this->clearDirectory($this->directory);
         return true;
     }
 
-    /**
-     * Retrieve multiple items from the cache by key.
-     *
-     * @param  iterable  $keys
-     * @param  mixed   $default
-     * @return iterable
-     */
-    public function getMultiple(iterable $keys, mixed $default = null): iterable
-    {
-        $values = [];
-
-        foreach ($keys as $key) {
-            $values[$key] = $this->get($key, $default);
-        }
-
-        return $values;
-    }
-
-    /**
-     * Store multiple items in the cache.
-     *
-     * @param  iterable  $values
-     * @param  \DateInterval|int|null  $ttl
-     * @return bool
-     */
-    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
-    {
-        foreach ($values as $key => $value) {
-            if (!$this->set($key, $value, $ttl)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Remove multiple items from the cache.
-     *
-     * @param  iterable  $keys
-     * @return bool
-     */
-    public function deleteMultiple(iterable $keys): bool
-    {
-        foreach ($keys as $key) {
-            $this->delete($key);
-        }
-
-        return true;
-    }
-
-    /**
-     * Check if an item exists in the cache.
-     *
-     * @param  string  $key
-     * @return bool
-     */
     public function has(string $key): bool
     {
         return $this->get($key) !== null;
     }
 
-    /**
-     * Increment the value of an item in the cache.
-     *
-     * @param  string  $key
-     * @param  int  $value
-     * @return int|bool
-     */
-    public function increment(string $key, int $value = 1): int|bool
+    public function increment(string $key, int $value = 1): int|false
     {
         $current = (int) $this->get($key, 0);
-        $new = $current + $value;
-        
+        $new     = $current + $value;
+
         if ($this->set($key, $new)) {
             return $new;
         }
@@ -205,47 +131,137 @@ class FileStore extends CacheStore
         return false;
     }
 
-    /**
-     * Decrement the value of an item in the cache.
-     *
-     * @param  string  $key
-     * @param  int  $value
-     * @return int|bool
-     */
-    public function decrement(string $key, int $value = 1): int|bool
+    public function decrement(string $key, int $value = 1): int|false
     {
         return $this->increment($key, -$value);
     }
 
+    public function touch(string $key, \DateInterval|int $ttl): bool
+    {
+        $path = $this->path($key);
+
+        if (!file_exists($path)) {
+            return false;
+        }
+
+        $contents = file_get_contents($path);
+
+        if ($contents === false) {
+            return false;
+        }
+
+        $payload = $this->serializer->unserialize($contents);
+
+        if (!is_array($payload) || $this->isExpired($payload)) {
+            @unlink($path);
+            return false;
+        }
+
+        $seconds             = $this->ttlToSeconds($ttl);
+        $payload['expiration'] = $seconds !== null ? time() + $seconds : null;
+
+        return file_put_contents($path, $this->serializer->serialize($payload), LOCK_EX) !== false;
+    }
+
+    public function lock(string $name, int $seconds = 0, ?string $owner = null): LockInterface
+    {
+        return new FileLock($name, $seconds, $owner, $this->directory . '/.locks');
+    }
+
+    public function getStats(): CacheStats
+    {
+        $count = 0;
+        $size  = 0;
+
+        if (is_dir($this->directory)) {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($this->directory, \FilesystemIterator::SKIP_DOTS),
+            );
+
+            foreach ($iterator as $file) {
+                if ($file->isFile() && !str_contains($file->getPath(), '.locks')) {
+                    $count++;
+                    $size += $file->getSize();
+                }
+            }
+        }
+
+        return new CacheStats(
+            hits:        $this->statHits,
+            misses:      $this->statMisses,
+            writes:      $this->statWrites,
+            deletes:     $this->statDeletes,
+            itemCount:   $count,
+            memoryUsage: $size,
+        );
+    }
+
     /**
-     * Get the full path for a cache key.
+     * Garbage collection — remove all expired cache files.
      *
-     * @param  string  $key
-     * @return string
+     * @return int Number of expired files removed.
+     */
+    public function gc(): int
+    {
+        $removed = 0;
+
+        if (!is_dir($this->directory)) {
+            return 0;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->directory, \FilesystemIterator::SKIP_DOTS),
+        );
+
+        foreach ($iterator as $file) {
+            if (!$file->isFile() || str_contains($file->getPath(), '.locks')) {
+                continue;
+            }
+
+            $contents = @file_get_contents($file->getPathname());
+
+            if ($contents === false) {
+                continue;
+            }
+
+            try {
+                $payload = $this->serializer->unserialize($contents);
+            } catch (\Throwable) {
+                @unlink($file->getPathname());
+                $removed++;
+                continue;
+            }
+
+            if (is_array($payload) && $this->isExpired($payload)) {
+                @unlink($file->getPathname());
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+
+    // ── Private ────────────────────────────────────────────────
+
+    /**
+     * Get the full file path for a cache key with directory sharding.
      */
     private function path(string $key): string
     {
-        $parts = array_slice(str_split($hash = md5($this->prepareKey($key)), 2), 0, 2);
+        $hash  = hash('xxh128', $this->prepareKey($key));
+        $parts = array_slice(str_split($hash, 2), 0, $this->shardDepth);
+
         return $this->directory . '/' . implode('/', $parts) . '/' . $hash;
     }
 
     /**
-     * Check if the payload is expired
-     *
-     * @param  array  $payload
-     * @return bool
+     * @param array{expiration: ?int} $payload
      */
     private function isExpired(array $payload): bool
     {
-        return $payload['expiration'] !== null && time() >= $payload['expiration'];
+        return isset($payload['expiration']) && $payload['expiration'] !== null && time() >= $payload['expiration'];
     }
 
-    /**
-     * Recursively clear a directory
-     *
-     * @param  string  $directory
-     * @return void
-     */
     private function clearDirectory(string $directory): void
     {
         if (!is_dir($directory)) {
@@ -263,50 +279,4 @@ class FileStore extends CacheStore
             }
         }
     }
-
-    /**
-     * Recursively clear only entries matching the given tags.
-     *
-     * @param  string    $directory
-     * @param  string[]  $tags
-     * @return void
-     */
-    private function clearDirectoryByTags(string $directory, array $tags): void
-    {
-        if (!is_dir($directory)) {
-            return;
-        }
-
-        $items = new \FilesystemIterator($directory);
-
-        foreach ($items as $item) {
-            if ($item->isDir() && !$item->isLink()) {
-                // Recurse into subdirectories
-                $this->clearDirectoryByTags($item->getPathname(), $tags);
-
-                // Optionally remove empty directories after cleaning
-                @rmdir($item->getPathname());
-                continue;
-            }
-
-            // For files: read payload and check tags
-            $contents = @file_get_contents($item->getPathname());
-            if ($contents === false) {
-                continue;
-            }
-
-            $payload = $this->unserialize($contents);
-            if (!is_array($payload)) {
-                continue;
-            }
-
-            $payloadTags = $payload['tags'] ?? [];
-
-            // If the cached item has any of the current tags, delete it
-            if (!empty($payloadTags) && array_intersect($payloadTags, $tags)) {
-                @unlink($item->getPathname());
-            }
-        }
-    }
-
 }

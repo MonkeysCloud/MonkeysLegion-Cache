@@ -1,284 +1,226 @@
 <?php
 
-namespace MonkeysLegion\Cache\Stores;
-
-use MonkeysLegion\Cache\CacheStore;
+declare(strict_types=1);
 
 /**
- * ArrayStore
+ * MonkeysLegion Cache v2
  *
- * @package MonkeysLegion\Cache\Stores
+ * @package   MonkeysLegion\Cache\Stores
+ * @author    MonkeysCloud <jorge@monkeyscloud.com>
+ * @license   MIT
+ *
+ * @requires  PHP 8.4
  */
-class ArrayStore extends CacheStore
-{
-    /**
-     * The array of items stored in the cache.
-     *
-     * @var object
-     */
-    private object $data;
 
-    /**
-     * Create a new array store instance.
-     *
-     * @param  string  $prefix
-     * @return void
-     */
-    public function __construct(string $prefix = '')
-    {
-        parent::__construct($prefix);
-        
-        $this->data = new class {
-            public array $storage = [];
-            public array $expirations = [];
-            public array $tagMap = [];
-        };
+namespace MonkeysLegion\Cache\Stores;
+
+use MonkeysLegion\Cache\CacheStats;
+use MonkeysLegion\Cache\CacheStore;
+use MonkeysLegion\Cache\Lock\ArrayLock;
+use MonkeysLegion\Cache\Lock\LockInterface;
+use MonkeysLegion\Cache\Serializer\CacheSerializerInterface;
+use MonkeysLegion\Cache\Serializer\PhpSerializer;
+
+/**
+ * In-memory cache store for testing and single-request caching.
+ *
+ * Uses PHP 8.4: final class, new-in-initializer, match expressions.
+ */
+final class ArrayStore extends CacheStore
+{
+    /** @var array<string, mixed> */
+    private array $storage = [];
+
+    /** @var array<string, int> Key → expiration timestamp */
+    private array $expirations = [];
+
+    /** @var array<string, list<string>> Key → tag list */
+    private array $tagMap = [];
+
+    public function __construct(
+        string $prefix = '',
+        CacheSerializerInterface $serializer = new PhpSerializer(),
+    ) {
+        parent::__construct($prefix, $serializer);
     }
 
-    /**
-     * Get an item from the cache.
-     *
-     * @param  string  $key
-     * @param  mixed   $default
-     * @return mixed
-     */
     public function get(string $key, mixed $default = null): mixed
     {
-        $key = $this->prepareKey($key);
+        $prepared = $this->prepareKey($key);
 
-        if (!array_key_exists($key, $this->data->storage)) {
+        if (!array_key_exists($prepared, $this->storage)) {
+            $this->statMisses++;
             return $default;
         }
 
-        if ($this->isExpired($key)) {
-            $this->delete($key);
+        if ($this->isExpired($prepared)) {
+            unset($this->storage[$prepared], $this->expirations[$prepared], $this->tagMap[$prepared]);
+            $this->statMisses++;
             return $default;
         }
 
-        return $this->data->storage[$key];
+        $this->statHits++;
+        return $this->storage[$prepared];
     }
 
-    /**
-     * Store an item in the cache.
-     *
-     * @param  string  $key
-     * @param  mixed   $value
-     * @param  \DateInterval|int|null  $ttl
-     * @return bool
-     */
     public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
     {
-        $key = $this->prepareKey($key);
-        $this->data->storage[$key] = $value;
+        $prepared = $this->prepareKey($key);
+        $seconds  = $this->ttlToSeconds($ttl);
 
-        if (!empty($this->tags)) {
-            $this->data->tagMap[$key] = $this->tags;
-        }
+        $this->storage[$prepared] = $value;
 
-        $seconds = $this->getSeconds($ttl);
-        
         if ($seconds !== null) {
-            $this->data->expirations[$key] = time() + $seconds;
+            $this->expirations[$prepared] = time() + $seconds;
         } else {
-            unset($this->data->expirations[$key]);
+            unset($this->expirations[$prepared]);
         }
 
+        $this->statWrites++;
         return true;
     }
 
-    /**
-     * Remove an item from the cache.
-     *
-     * @param  string  $key
-     * @return bool
-     */
     public function delete(string $key): bool
     {
-        $key = $this->prepareKey($key);
-        
-        unset(
-            $this->data->storage[$key], 
-            $this->data->expirations[$key],
-            $this->data->tagMap[$key]
-        );
-        
+        $prepared = $this->prepareKey($key);
+
+        unset($this->storage[$prepared], $this->expirations[$prepared], $this->tagMap[$prepared]);
+
+        $this->statDeletes++;
         return true;
     }
 
-    /**
-     * Remove all items from the cache.
-     *
-     * @return bool
-     */
     public function clear(): bool
     {
-        if (!empty($this->tags)) {
-            return $this->clearTags();
-        }
-
-        $this->data->storage = [];
-        $this->data->expirations = [];
-        $this->data->tagMap = [];
-        
-        return true;
-    }
-
-    /**
-     * Get multiple items from the cache.
-     *
-     * @param  iterable  $keys
-     * @param  mixed   $default
-     * @return iterable
-     */
-    public function getMultiple(iterable $keys, mixed $default = null): iterable
-    {
-        $values = [];
-
-        foreach ($keys as $key) {
-            $values[$key] = $this->get($key, $default);
-        }
-
-        return $values;
-    }
-
-    /**
-     * Store multiple items in the cache.
-     *
-     * @param  iterable  $values
-     * @param  \DateInterval|int|null  $ttl
-     * @return bool
-     */
-    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
-    {
-        foreach ($values as $key => $value) {
-            $this->set($key, $value, $ttl);
-        }
+        $this->storage     = [];
+        $this->expirations = [];
+        $this->tagMap      = [];
 
         return true;
     }
 
-    /**
-     * Remove multiple items from the cache.
-     *
-     * @param  iterable  $keys
-     * @return bool
-     */
-    public function deleteMultiple(iterable $keys): bool
-    {
-        foreach ($keys as $key) {
-            $this->delete($key);
-        }
-
-        return true;
-    }
-
-    /**
-     * Determine if an item exists in the cache.
-     *
-     * @param  string  $key
-     * @return bool
-     */
     public function has(string $key): bool
     {
-        $key = $this->prepareKey($key);
-        
-        if (!array_key_exists($key, $this->data->storage)) {
+        $prepared = $this->prepareKey($key);
+
+        if (!array_key_exists($prepared, $this->storage)) {
             return false;
         }
 
-        if ($this->isExpired($key)) {
-            $this->delete($key);
+        if ($this->isExpired($prepared)) {
+            unset($this->storage[$prepared], $this->expirations[$prepared], $this->tagMap[$prepared]);
             return false;
         }
 
         return true;
     }
 
-    /**
-     * Increment the value of an item in the cache.
-     *
-     * @param  string  $key
-     * @param  int  $value
-     * @return int|bool
-     */
-    public function increment(string $key, int $value = 1): int|bool
+    public function increment(string $key, int $value = 1): int|false
     {
         $current = (int) $this->get($key, 0);
-        $new = $current + $value;
-        
+        $new     = $current + $value;
+
         $this->set($key, $new);
-        
+
         return $new;
     }
 
-    /**
-     * Decrement the value of an item in the cache.
-     *
-     * @param  string  $key
-     * @param  int  $value
-     * @return int|bool
-     */
-    public function decrement(string $key, int $value = 1): int|bool
+    public function decrement(string $key, int $value = 1): int|false
     {
         return $this->increment($key, -$value);
     }
 
-    /**
-     * Get all items in storage (for testing/debugging)
-     *
-     * @return array
-     */
-    public function all(): array
+    public function touch(string $key, \DateInterval|int $ttl): bool
     {
-        // Remove expired items
-        foreach (array_keys($this->data->storage) as $key) {
-            if ($this->isExpired($key)) {
-                unset(
-                    $this->data->storage[$key], 
-                    $this->data->expirations[$key],
-                    $this->data->tagMap[$key]
-                );
-            }
-        }
+        $prepared = $this->prepareKey($key);
 
-        return $this->data->storage;
-    }
-
-    /**
-     * Check if a key is expired
-     *
-     * @param  string  $key
-     * @return bool
-     */
-    private function isExpired(string $key): bool
-    {
-        if (!isset($this->data->expirations[$key])) {
+        if (!array_key_exists($prepared, $this->storage) || $this->isExpired($prepared)) {
             return false;
         }
 
-        return time() >= $this->data->expirations[$key];
+        $seconds = $this->ttlToSeconds($ttl);
+        $this->expirations[$prepared] = time() + ($seconds ?? 0);
+
+        return true;
+    }
+
+    public function lock(string $name, int $seconds = 0, ?string $owner = null): LockInterface
+    {
+        return new ArrayLock($name, $seconds, $owner);
+    }
+
+    public function getStats(): CacheStats
+    {
+        // Remove expired items for accurate count
+        foreach (array_keys($this->storage) as $key) {
+            if ($this->isExpired($key)) {
+                unset($this->storage[$key], $this->expirations[$key], $this->tagMap[$key]);
+            }
+        }
+
+        return new CacheStats(
+            hits:        $this->statHits,
+            misses:      $this->statMisses,
+            writes:      $this->statWrites,
+            deletes:     $this->statDeletes,
+            itemCount:   count($this->storage),
+            memoryUsage: (int) (strlen(serialize($this->storage)) * 1.1),
+        );
+    }
+
+    // ── Tag support (internal) ─────────────────────────────────
+
+    /**
+     * Store tags for a prepared key.
+     *
+     * @param string        $preparedKey Already-prefixed key.
+     * @param list<string>  $tags        Tag names.
+     */
+    public function setTags(string $preparedKey, array $tags): void
+    {
+        $this->tagMap[$preparedKey] = $tags;
     }
 
     /**
-     * Clear items matching current tags
+     * Flush all keys matching any of the given tags.
      *
-     * @return bool
+     * @param list<string> $tags Tags to invalidate.
      */
-    private function clearTags(): bool
+    public function flushTags(array $tags): bool
     {
-        $tagsToClear = $this->tags;
-        
-        foreach ($this->data->tagMap as $key => $tags) {
-            // Check if any of the tags to clear are present in the item's tags
-            if (count(array_intersect($tagsToClear, $tags)) > 0) {
-                unset(
-                    $this->data->storage[$key], 
-                    $this->data->expirations[$key],
-                    $this->data->tagMap[$key]
-                );
+        foreach ($this->tagMap as $key => $itemTags) {
+            if (array_intersect($tags, $itemTags) !== []) {
+                unset($this->storage[$key], $this->expirations[$key], $this->tagMap[$key]);
             }
         }
 
         return true;
+    }
+
+    /**
+     * Get all non-expired items (for testing/debugging).
+     *
+     * @return array<string, mixed>
+     */
+    public function all(): array
+    {
+        foreach (array_keys($this->storage) as $key) {
+            if ($this->isExpired($key)) {
+                unset($this->storage[$key], $this->expirations[$key], $this->tagMap[$key]);
+            }
+        }
+
+        return $this->storage;
+    }
+
+    // ── Private ────────────────────────────────────────────────
+
+    private function isExpired(string $preparedKey): bool
+    {
+        if (!isset($this->expirations[$preparedKey])) {
+            return false;
+        }
+
+        return time() >= $this->expirations[$preparedKey];
     }
 }

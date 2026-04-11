@@ -1,245 +1,269 @@
 <?php
 
-namespace MonkeysLegion\Cache\Stores;
-
-use MonkeysLegion\Cache\CacheStore;
+declare(strict_types=1);
 
 /**
- * RedisStore
+ * MonkeysLegion Cache v2
  *
- * @package MonkeysLegion\Cache\Stores
+ * @package   MonkeysLegion\Cache\Stores
+ * @author    MonkeysCloud <jorge@monkeyscloud.com>
+ * @license   MIT
+ *
+ * @requires  PHP 8.4
+ * @requires  ext-redis
  */
-class RedisStore extends CacheStore
-{
-    /**
-     * The Redis connection instance
-     *
-     * @var \Redis
-     */
-    private \Redis $redis;
 
-    /**
-     * Create a new store instance.
-     *
-     * @param \Redis $redis
-     * @param string $prefix
-     */
-    public function __construct(\Redis $redis, string $prefix = '')
-    {
-        parent::__construct($prefix);
-        $this->redis = $redis;
+namespace MonkeysLegion\Cache\Stores;
+
+use MonkeysLegion\Cache\CacheStats;
+use MonkeysLegion\Cache\CacheStore;
+use MonkeysLegion\Cache\Lock\LockInterface;
+use MonkeysLegion\Cache\Lock\RedisLock;
+use MonkeysLegion\Cache\Serializer\CacheSerializerInterface;
+use MonkeysLegion\Cache\Serializer\PhpSerializer;
+
+/**
+ * Redis cache store with native atomic operations and pipeline batching.
+ *
+ * Uses PHP 8.4: final class, new-in-initializer.
+ */
+final class RedisStore extends CacheStore
+{
+    public function __construct(
+        private readonly \Redis $redis,
+        string $prefix = '',
+        CacheSerializerInterface $serializer = new PhpSerializer(),
+    ) {
+        parent::__construct($prefix, $serializer);
     }
 
-    /**
-     * Retrieve an item from the cache by key.
-     *
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
     public function get(string $key, mixed $default = null): mixed
     {
         $value = $this->redis->get($this->prepareKey($key));
 
         if ($value === false) {
+            $this->statMisses++;
             return $default;
         }
 
-        return $this->unserialize($value);
+        $this->statHits++;
+        return $this->serializer->unserialize($value);
     }
 
-    /**
-     * Store an item in the cache for a given number of seconds.
-     *
-     * @param string $key
-     * @param mixed $value
-     * @param \DateInterval|int|null $ttl
-     * @return bool
-     */
     public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
     {
-        $seconds = $this->getSeconds($ttl);
-        $key = $this->prepareKey($key);
-        $value = $this->serialize($value);
+        $seconds = $this->ttlToSeconds($ttl);
+        $prepared = $this->prepareKey($key);
+        $serialized = $this->serializer->serialize($value);
 
-        if ($seconds === null) {
-            return $this->redis->set($key, $value);
+        $this->statWrites++;
+
+        if ($seconds === null || $seconds === 0) {
+            return $this->redis->set($prepared, $serialized);
         }
 
-        return $this->redis->setex($key, $seconds, $value);
+        return $this->redis->setex($prepared, $seconds, $serialized);
     }
 
-    /**
-     * Remove an item from the cache.
-     *
-     * @param string $key
-     * @return bool
-     */
     public function delete(string $key): bool
     {
+        $this->statDeletes++;
         return $this->redis->del($this->prepareKey($key)) > 0;
     }
 
-    /**
-     * Remove all items from the cache.
-     *
-     * @return bool
-     */
     public function clear(): bool
     {
-        if (!empty($this->tags)) {
-            return $this->flushTags();
+        if ($this->prefix !== '') {
+            // Only clear keys with our prefix (safe for shared Redis)
+            $pattern = $this->prefix . '*';
+            $cursor  = null;
+            $keys    = [];
+
+            do {
+                $scan = $this->redis->scan($cursor, $pattern, 1000);
+
+                if ($scan !== false) {
+                    $keys = array_merge($keys, $scan);
+                }
+            } while ($cursor > 0);
+
+            if ($keys !== []) {
+                $this->redis->del($keys);
+            }
+
+            return true;
         }
 
         return $this->redis->flushDB();
     }
 
-    /**
-     * Retrieve multiple items from the cache by key.
-     *
-     * @param iterable $keys
-     * @param mixed $default
-     * @return iterable
-     */
-    public function getMultiple(iterable $keys, mixed $default = null): iterable
-    {
-        $preparedKeys = [];
-        $keyMap = [];
-
-        foreach ($keys as $key) {
-            $preparedKey = $this->prepareKey($key);
-            $preparedKeys[] = $preparedKey;
-            $keyMap[$preparedKey] = $key;
-        }
-
-        $values = $this->redis->mGet($preparedKeys);
-        $results = [];
-
-        foreach ($values as $index => $value) {
-            $originalKey = $keyMap[$preparedKeys[$index]];
-            $results[$originalKey] = $value !== false ? $this->unserialize($value) : $default;
-        }
-
-        return $results;
-    }
-
-    /**
-     * Store multiple items in the cache for a given number of seconds.
-     *
-     * @param iterable $values
-     * @param \DateInterval|int|null $ttl
-     * @return bool
-     */
-    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
-    {
-        $seconds = $this->getSeconds($ttl);
-        $pipeline = $this->redis->multi(\Redis::PIPELINE);
-
-        foreach ($values as $key => $value) {
-            $preparedKey = $this->prepareKey($key);
-            $serialized = $this->serialize($value);
-
-            if ($seconds === null) {
-                $pipeline->set($preparedKey, $serialized);
-            } else {
-                $pipeline->setex($preparedKey, $seconds, $serialized);
-            }
-        }
-
-        $results = $pipeline->exec();
-        
-        return !in_array(false, $results, true);
-    }
-
-    /**
-     * Remove multiple items from the cache.
-     *
-     * @param iterable $keys
-     * @return bool
-     */
-    public function deleteMultiple(iterable $keys): bool
-    {
-        $preparedKeys = [];
-        
-        foreach ($keys as $key) {
-            $preparedKeys[] = $this->prepareKey($key);
-        }
-
-        $this->redis->del($preparedKeys);
-        return true;
-    }
-
-    /**
-     * Determine if an item exists in the cache.
-     *
-     * @param string $key
-     * @return bool
-     */
     public function has(string $key): bool
     {
         return $this->redis->exists($this->prepareKey($key)) > 0;
     }
 
-    /**
-     * Increment the value of an item in the cache.
-     *
-     * @param string $key
-     * @param int $value
-     * @return int|bool
-     */
-    public function increment(string $key, int $value = 1): int|bool
+    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    {
+        $preparedKeys = [];
+        $keyMap       = [];
+
+        foreach ($keys as $key) {
+            $prepared       = $this->prepareKey($key);
+            $preparedKeys[] = $prepared;
+            $keyMap[$prepared] = $key;
+        }
+
+        $values  = $this->redis->mGet($preparedKeys);
+        $results = [];
+
+        foreach ($values as $i => $value) {
+            $originalKey = $keyMap[$preparedKeys[$i]];
+
+            if ($value !== false) {
+                $this->statHits++;
+                $results[$originalKey] = $this->serializer->unserialize($value);
+            } else {
+                $this->statMisses++;
+                $results[$originalKey] = $default;
+            }
+        }
+
+        return $results;
+    }
+
+    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
+    {
+        $seconds  = $this->ttlToSeconds($ttl);
+        $pipeline = $this->redis->multi(\Redis::PIPELINE);
+
+        foreach ($values as $key => $value) {
+            $prepared   = $this->prepareKey($key);
+            $serialized = $this->serializer->serialize($value);
+
+            if ($seconds === null || $seconds === 0) {
+                $pipeline->set($prepared, $serialized);
+            } else {
+                $pipeline->setex($prepared, $seconds, $serialized);
+            }
+
+            $this->statWrites++;
+        }
+
+        $results = $pipeline->exec();
+
+        return !in_array(false, $results, true);
+    }
+
+    public function deleteMultiple(iterable $keys): bool
+    {
+        $prepared = [];
+
+        foreach ($keys as $key) {
+            $prepared[] = $this->prepareKey($key);
+            $this->statDeletes++;
+        }
+
+        if ($prepared === []) {
+            return true;
+        }
+
+        $this->redis->del($prepared);
+        return true;
+    }
+
+    public function increment(string $key, int $value = 1): int|false
     {
         return $this->redis->incrBy($this->prepareKey($key), $value);
     }
 
-    /**
-     * Decrement the value of an item in the cache.
-     *
-     * @param string $key
-     * @param int $value
-     * @return int|bool
-     */
-    public function decrement(string $key, int $value = 1): int|bool
+    public function decrement(string $key, int $value = 1): int|false
     {
         return $this->redis->decrBy($this->prepareKey($key), $value);
     }
 
-    /**
-     * Store an item in the cache indefinitely
-     *
-     * @param string $key
-     * @param mixed $value
-     * @return bool
-     */
     public function forever(string $key, mixed $value): bool
     {
-        return $this->redis->set($this->prepareKey($key), $this->serialize($value));
+        $this->statWrites++;
+        return $this->redis->set(
+            $this->prepareKey($key),
+            $this->serializer->serialize($value),
+        );
     }
 
     /**
-     * Get the Redis connection instance
-     *
-     * @return \Redis
+     * Native EXPIRE — single round-trip (Laravel 13 Cache::touch parity).
+     */
+    public function touch(string $key, \DateInterval|int $ttl): bool
+    {
+        $seconds = $this->ttlToSeconds($ttl);
+
+        if ($seconds === null || $seconds <= 0) {
+            return false;
+        }
+
+        return $this->redis->expire($this->prepareKey($key), $seconds);
+    }
+
+    /**
+     * Atomic SET NX — set if not exists.
+     */
+    public function add(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
+    {
+        $seconds  = $this->ttlToSeconds($ttl);
+        $prepared = $this->prepareKey($key);
+        $serialized = $this->serializer->serialize($value);
+
+        if ($seconds !== null && $seconds > 0) {
+            // SET key value EX seconds NX
+            $result = $this->redis->set($prepared, $serialized, ['NX', 'EX' => $seconds]);
+        } else {
+            $result = $this->redis->setnx($prepared, $serialized);
+        }
+
+        if ($result) {
+            $this->statWrites++;
+        }
+
+        return (bool) $result;
+    }
+
+    public function lock(string $name, int $seconds = 0, ?string $owner = null): LockInterface
+    {
+        return new RedisLock($this->redis, $name, $seconds, $owner);
+    }
+
+    public function getStats(): CacheStats
+    {
+        $info = $this->redis->info('memory');
+
+        return new CacheStats(
+            hits:        $this->statHits,
+            misses:      $this->statMisses,
+            writes:      $this->statWrites,
+            deletes:     $this->statDeletes,
+            itemCount:   (int) $this->redis->dbSize(),
+            memoryUsage: (int) ($info['used_memory'] ?? 0),
+        );
+    }
+
+    /**
+     * Get the underlying Redis connection.
      */
     public function getRedis(): \Redis
     {
         return $this->redis;
     }
 
-    /**
-     * Flush cache by tags
-     *
-     * @return bool
-     */
-    private function flushTags(): bool
+    // ── Raw get/set for internal flexible() support ────────────
+
+    protected function getRaw(string $key): ?string
     {
-        $pattern = implode(':', $this->tags) . ':*';
-        $keys = $this->redis->keys($pattern);
+        $value = $this->redis->get($this->prepareKey($key));
+        return $value !== false ? $value : null;
+    }
 
-        if (empty($keys)) {
-            return true;
-        }
-
-        return $this->redis->del($keys) > 0;
+    protected function setRaw(string $key, string $data, int $ttl): bool
+    {
+        return $this->redis->setex($this->prepareKey($key), $ttl, $data);
     }
 }

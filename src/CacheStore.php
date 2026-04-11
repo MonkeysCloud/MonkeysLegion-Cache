@@ -1,46 +1,58 @@
 <?php
 
-namespace MonkeysLegion\Cache;
+declare(strict_types=1);
 
 /**
- * CacheStore
+ * MonkeysLegion Cache v2
  *
- * @package MonkeysLegion\Cache
+ * @package   MonkeysLegion\Cache
+ * @author    MonkeysCloud <jorge@monkeyscloud.com>
+ * @license   MIT
+ *
+ * @requires  PHP 8.4
  */
-abstract class CacheStore implements CacheInterface
+
+namespace MonkeysLegion\Cache;
+
+use MonkeysLegion\Cache\Lock\LockInterface;
+use MonkeysLegion\Cache\Lock\ArrayLock;
+use MonkeysLegion\Cache\Serializer\CacheSerializerInterface;
+use MonkeysLegion\Cache\Serializer\PhpSerializer;
+
+/**
+ * Abstract cache store with shared logic for all drivers.
+ *
+ * Uses PHP 8.4 property hooks, `new` in initializers, and match expressions.
+ * Provides default implementations for remember, flexible, typed getters, etc.
+ */
+abstract class CacheStore implements CacheStoreInterface
 {
-    /**
-     * The cache key prefix
-     *
-     * @var string
-     */
-    protected string $prefix = '';
+    /** @var int Internal hit counter */
+    protected int $statHits = 0;
+
+    /** @var int Internal miss counter */
+    protected int $statMisses = 0;
+
+    /** @var int Internal write counter */
+    protected int $statWrites = 0;
+
+    /** @var int Internal delete counter */
+    protected int $statDeletes = 0;
 
     /**
-     * The tags for the cache store
-     *
-     * @var array
+     * Prefix applied to all cache keys.
      */
-    protected array $tags = [];
+    protected string $prefix;
 
-    /**
-     * Create a new CacheStore instance
-     *
-     * @param string $prefix
-     */
-    public function __construct(string $prefix = '')
-    {
-        $this->prefix = $prefix;
+    public function __construct(
+        string $prefix = '',
+        protected readonly CacheSerializerInterface $serializer = new PhpSerializer(),
+    ) {
+        $this->prefix = $prefix !== '' ? rtrim($prefix, ':') . ':' : '';
     }
 
-    /**
-     * Get an item from the cache, or execute the given Closure and store the result
-     *
-     * @param string $key
-     * @param \DateInterval|int|null $ttl
-     * @param \Closure $callback
-     * @return mixed
-     */
+    // ── Template methods: remember / rememberForever ────────────
+
     public function remember(string $key, \DateInterval|int|null $ttl, \Closure $callback): mixed
     {
         $value = $this->get($key);
@@ -55,13 +67,6 @@ abstract class CacheStore implements CacheInterface
         return $value;
     }
 
-    /**
-     * Get an item from the cache, or execute the given Closure and store the result forever
-     *
-     * @param string $key
-     * @param \Closure $callback
-     * @return mixed
-     */
     public function rememberForever(string $key, \Closure $callback): mixed
     {
         $value = $this->get($key);
@@ -76,53 +81,19 @@ abstract class CacheStore implements CacheInterface
         return $value;
     }
 
-    /**
-     * Store an item in the cache indefinitely
-     *
-     * @param string $key
-     * @param mixed $value
-     * @return bool
-     */
     public function forever(string $key, mixed $value): bool
     {
         return $this->set($key, $value, null);
     }
 
-    /**
-     * Store multiple items in the cache for a given number of seconds
-     *
-     * @param array $values
-     * @param \DateInterval|int|null $ttl
-     * @return bool
-     */
-    public function putMany(array $values, \DateInterval|int|null $ttl = null): bool
-    {
-        return $this->setMultiple($values, $ttl);
-    }
-
-    /**
-     * Retrieve an item and delete it
-     *
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
     public function pull(string $key, mixed $default = null): mixed
     {
         $value = $this->get($key, $default);
         $this->delete($key);
-        
+
         return $value;
     }
 
-    /**
-     * Store an item in the cache if the key does not exist
-     *
-     * @param string $key
-     * @param mixed $value
-     * @param \DateInterval|int|null $ttl
-     * @return bool
-     */
     public function add(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
     {
         if ($this->has($key)) {
@@ -132,44 +103,195 @@ abstract class CacheStore implements CacheInterface
         return $this->set($key, $value, $ttl);
     }
 
-    /**
-     * Get the cache key prefix
-     *
-     * @return string
-     */
+    public function touch(string $key, \DateInterval|int $ttl): bool
+    {
+        $value = $this->get($key);
+
+        if ($value === null) {
+            return false;
+        }
+
+        return $this->set($key, $value, $ttl);
+    }
+
+    // ── Stampede protection: flexible() ─────────────────────────
+
+    public function flexible(string $key, array $ttl, \Closure $callback, float $beta = 1.0): mixed
+    {
+        [$staleTtl, $freshTtl] = $ttl;
+
+        // Store internal CacheEntry with metadata
+        $entryKey = '__flex:' . $key;
+        $raw      = $this->getRaw($entryKey);
+
+        if ($raw !== null) {
+            $entry = $this->serializer->unserialize($raw);
+
+            if ($entry instanceof CacheEntry) {
+                // Still fresh — return directly
+                if (!$entry->isExpired && !$entry->shouldRefresh($beta)) {
+                    $this->statHits++;
+                    return $entry->value;
+                }
+
+                // Stale but within stale window — return stale, let next request recompute
+                if ($entry->expiresAt !== null && time() < $entry->expiresAt + $staleTtl) {
+                    $this->statHits++;
+                    return $entry->value;
+                }
+            }
+        }
+
+        // Compute fresh value
+        $this->statMisses++;
+        $value = $callback();
+
+        $entry = new CacheEntry(
+            value:     $value,
+            expiresAt: time() + $freshTtl,
+        );
+
+        $this->setRaw($entryKey, $this->serializer->serialize($entry), $staleTtl + $freshTtl);
+
+        return $value;
+    }
+
+    // ── Typed getters ──────────────────────────────────────────
+
+    public function integer(string $key, int $default = 0): int
+    {
+        $value = $this->get($key);
+
+        return $value !== null ? (int) $value : $default;
+    }
+
+    public function boolean(string $key, bool $default = false): bool
+    {
+        $value = $this->get($key);
+
+        return $value !== null ? (bool) $value : $default;
+    }
+
+    public function float(string $key, float $default = 0.0): float
+    {
+        $value = $this->get($key);
+
+        return $value !== null ? (float) $value : $default;
+    }
+
+    public function string(string $key, string $default = ''): string
+    {
+        $value = $this->get($key);
+
+        return $value !== null ? (string) $value : $default;
+    }
+
+    public function array(string $key, array $default = []): array
+    {
+        $value = $this->get($key);
+
+        return is_array($value) ? $value : $default;
+    }
+
+    // ── Tags (default: returns TaggedCache wrapper) ─────────────
+
+    public function tags(string|array $names): TaggedCache
+    {
+        $names = is_array($names) ? $names : [$names];
+
+        return new TaggedCache($this, $names);
+    }
+
+    // ── Locks (default: in-memory array lock) ───────────────────
+
+    public function lock(string $name, int $seconds = 0, ?string $owner = null): LockInterface
+    {
+        return new ArrayLock($name, $seconds, $owner);
+    }
+
+    // ── Observability ──────────────────────────────────────────
+
     public function getPrefix(): string
     {
         return $this->prefix;
     }
 
+    public function getStats(): CacheStats
+    {
+        return new CacheStats(
+            hits:      $this->statHits,
+            misses:    $this->statMisses,
+            writes:    $this->statWrites,
+            deletes:   $this->statDeletes,
+        );
+    }
+
+    // ── PSR-16 batch defaults ──────────────────────────────────
+
+    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    {
+        $results = [];
+
+        foreach ($keys as $key) {
+            $results[$key] = $this->get($key, $default);
+        }
+
+        return $results;
+    }
+
+    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
+    {
+        $success = true;
+
+        foreach ($values as $key => $value) {
+            if (!$this->set($key, $value, $ttl)) {
+                $success = false;
+            }
+        }
+
+        return $success;
+    }
+
+    public function deleteMultiple(iterable $keys): bool
+    {
+        $success = true;
+
+        foreach ($keys as $key) {
+            if (!$this->delete($key)) {
+                $success = false;
+            }
+        }
+
+        return $success;
+    }
+
+    // ── Key helpers ────────────────────────────────────────────
+
     /**
-     * Prepare a cache key with prefix
+     * Build a prefixed cache key.
      *
-     * @param string $key
-     * @return string
+     * @throws \InvalidArgumentException If the key contains reserved characters.
      */
     protected function prepareKey(string $key): string
     {
-        if (empty($key)) {
-            throw new \InvalidArgumentException('Cache key cannot be empty.');
+        if ($key === '') {
+            throw new \InvalidArgumentException('Cache key must not be empty.');
         }
 
-        $prepared = $this->prefix . $key;
-
-        if (!empty($this->tags)) {
-            $prepared = implode(':', $this->tags) . ':' . $prepared;
+        // PSR-16 reserved characters
+        if (preg_match('/[{}()\/@:\\\\]/', $key)) {
+            throw new \InvalidArgumentException(
+                "Cache key [{$key}] contains reserved characters: {}()/\\@:",
+            );
         }
 
-        return $prepared;
+        return $this->prefix . $key;
     }
 
     /**
-     * Convert TTL to seconds
-     *
-     * @param \DateInterval|int|null $ttl
-     * @return ?int
+     * Convert TTL to seconds.
      */
-    protected function getSeconds(\DateInterval|int|null $ttl): ?int
+    protected function ttlToSeconds(\DateInterval|int|null $ttl): ?int
     {
         if ($ttl === null) {
             return null;
@@ -179,41 +301,28 @@ abstract class CacheStore implements CacheInterface
             return (int) (new \DateTime())->add($ttl)->format('U') - time();
         }
 
-        return (int) $ttl;
+        return max(0, $ttl);
+    }
+
+    // ── Raw get/set for internal use (bypass serialization) ────
+
+    /**
+     * Get raw (already-serialized) string from the store.
+     * Override in drivers for performance.
+     */
+    protected function getRaw(string $key): ?string
+    {
+        $value = $this->get($key);
+
+        return $value !== null ? $this->serializer->serialize($value) : null;
     }
 
     /**
-     * Serialize value for storage
-     *
-     * @param mixed $value
-     * @return string
+     * Set raw (already-serialized) string into the store.
+     * Override in drivers for performance.
      */
-    protected function serialize(mixed $value): string
+    protected function setRaw(string $key, string $data, int $ttl): bool
     {
-        return serialize($value);
-    }
-
-    /**
-     * Unserialize value from storage
-     *
-     * @param string $value
-     * @return mixed
-     */
-    protected function unserialize(string $value): mixed
-    {
-        return unserialize($value);
-    }
-
-    /**
-     * Set tags for cache operations
-     *
-     * @param array|string $names
-     * @return static
-     */
-    public function tags(array|string $names): static
-    {
-        $clone = clone $this;
-        $clone->tags = is_array($names) ? $names : [$names];
-        return $clone;
+        return $this->set($key, $this->serializer->unserialize($data), $ttl);
     }
 }
