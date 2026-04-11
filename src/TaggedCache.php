@@ -28,9 +28,10 @@ final class TaggedCache
 {
     /**
      * The computed tag namespace (version-aware key prefix).
+     * Uses pipe separator to avoid ambiguity with tag names containing dots.
      */
     public string $tagNamespace {
-        get => 'tag.' . implode('.', $this->tags) . '.v' . $this->getTagVersion();
+        get => 'tag|' . implode('|', $this->tags) . '|v' . $this->getTagVersion();
     }
 
     /**
@@ -89,6 +90,67 @@ final class TaggedCache
         return $this->store->decrement($this->taggedKey($key), $value);
     }
 
+    // ── Batch operations ───────────────────────────────────────
+
+    /**
+     * Get multiple items scoped to tags.
+     *
+     * @param iterable<string> $keys
+     */
+    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    {
+        $taggedMap = [];
+        $taggedKeys = [];
+
+        foreach ($keys as $key) {
+            $tagged = $this->taggedKey($key);
+            $taggedMap[$tagged] = $key;
+            $taggedKeys[] = $tagged;
+        }
+
+        $taggedResults = $this->store->getMultiple($taggedKeys, $default);
+        $results = [];
+
+        foreach ($taggedResults as $taggedKey => $value) {
+            $originalKey = $taggedMap[$taggedKey] ?? $taggedKey;
+            $results[$originalKey] = $value;
+        }
+
+        return $results;
+    }
+
+    /**
+     * Set multiple items scoped to tags.
+     *
+     * @param iterable<string, mixed> $values
+     */
+    public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
+    {
+        $taggedValues = [];
+
+        foreach ($values as $key => $value) {
+            $taggedValues[$this->taggedKey($key)] = $value;
+        }
+
+        return $this->store->setMultiple($taggedValues, $ttl);
+    }
+
+    /**
+     * Delete multiple items scoped to tags.
+     *
+     * @param iterable<string> $keys
+     */
+    public function deleteMultiple(iterable $keys): bool
+    {
+        $taggedKeys = [];
+
+        foreach ($keys as $key) {
+            $taggedKeys[] = $this->taggedKey($key);
+        }
+
+        return $this->store->deleteMultiple($taggedKeys);
+    }
+
     // ── Tag invalidation ───────────────────────────────────────
 
     /**
@@ -105,6 +167,14 @@ final class TaggedCache
         }
 
         return true;
+    }
+
+    /**
+     * Alias for flush() for PSR-16 parity.
+     */
+    public function clear(): bool
+    {
+        return $this->flush();
     }
 
     /**

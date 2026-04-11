@@ -37,11 +37,16 @@ final class ArrayStore extends CacheStore
     /** @var array<string, list<string>> Key → tag list */
     private array $tagMap = [];
 
+    /** @var int Maximum number of items (0 = unlimited) */
+    private readonly int $maxItems;
+
     public function __construct(
         string $prefix = '',
         CacheSerializerInterface $serializer = new PhpSerializer(),
+        int $maxItems = 0,
     ) {
         parent::__construct($prefix, $serializer);
+        $this->maxItems = $maxItems;
     }
 
     public function get(string $key, mixed $default = null): mixed
@@ -59,8 +64,13 @@ final class ArrayStore extends CacheStore
             return $default;
         }
 
+        // LRU: move accessed key to end of array (most recently used)
+        $value = $this->storage[$prepared];
+        unset($this->storage[$prepared]);
+        $this->storage[$prepared] = $value;
+
         $this->statHits++;
-        return $this->storage[$prepared];
+        return $value;
     }
 
     public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
@@ -68,12 +78,20 @@ final class ArrayStore extends CacheStore
         $prepared = $this->prepareKey($key);
         $seconds  = $this->ttlToSeconds($ttl);
 
+        // If already exists, remove first so it goes to end (most recent)
+        unset($this->storage[$prepared]);
+
         $this->storage[$prepared] = $value;
 
         if ($seconds !== null) {
             $this->expirations[$prepared] = time() + $seconds;
         } else {
             unset($this->expirations[$prepared]);
+        }
+
+        // LRU eviction when maxItems is set
+        if ($this->maxItems > 0 && count($this->storage) > $this->maxItems) {
+            $this->evict();
         }
 
         $this->statWrites++;
@@ -222,5 +240,21 @@ final class ArrayStore extends CacheStore
         }
 
         return time() >= $this->expirations[$preparedKey];
+    }
+
+    /**
+     * Evict the least recently used items until under maxItems.
+     */
+    private function evict(): void
+    {
+        while (count($this->storage) > $this->maxItems) {
+            $oldestKey = array_key_first($this->storage);
+
+            if ($oldestKey === null) {
+                break;
+            }
+
+            unset($this->storage[$oldestKey], $this->expirations[$oldestKey], $this->tagMap[$oldestKey]);
+        }
     }
 }

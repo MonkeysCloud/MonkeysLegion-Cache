@@ -77,24 +77,20 @@ final class RedisStore extends CacheStore
             // Only clear keys with our prefix (safe for shared Redis)
             $pattern = $this->prefix . '*';
             $cursor  = null;
-            $keys    = [];
 
             do {
                 $scan = $this->redis->scan($cursor, $pattern, 1000);
 
-                if ($scan !== false) {
-                    $keys = array_merge($keys, $scan);
+                if ($scan !== false && $scan !== []) {
+                    // UNLINK is non-blocking (async key removal in Redis ≥4.0)
+                    $this->redis->unlink($scan);
                 }
             } while ($cursor > 0);
-
-            if ($keys !== []) {
-                $this->redis->del($keys);
-            }
 
             return true;
         }
 
-        return $this->redis->flushDB();
+        return $this->redis->flushDB(true); // async flush
     }
 
     public function has(string $key): bool

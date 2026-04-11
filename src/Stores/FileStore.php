@@ -38,7 +38,16 @@ final class FileStore extends CacheStore
     ) {
         parent::__construct($prefix, $serializer);
 
-        $this->directory = rtrim($directory, '/');
+        $realDir = realpath($directory) ?: $directory;
+
+        // Prevent path traversal: reject if the resolved path differs from input
+        if (str_contains($directory, '..')) {
+            throw new \InvalidArgumentException(
+                'Cache directory must not contain path traversal sequences (..).',
+            );
+        }
+
+        $this->directory = rtrim($realDir, '/');
 
         if (!is_dir($this->directory)) {
             mkdir($this->directory, 0o755, true);
@@ -92,8 +101,21 @@ final class FileStore extends CacheStore
             mkdir($directory, 0o755, true);
         }
 
+        // Atomic write: write to temp file then rename for crash safety
+        $tmpPath = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
+
+        if (file_put_contents($tmpPath, $payload, LOCK_EX) === false) {
+            @unlink($tmpPath);
+            return false;
+        }
+
+        if (!rename($tmpPath, $path)) {
+            @unlink($tmpPath);
+            return false;
+        }
+
         $this->statWrites++;
-        return file_put_contents($path, $payload, LOCK_EX) !== false;
+        return true;
     }
 
     public function delete(string $key): bool
