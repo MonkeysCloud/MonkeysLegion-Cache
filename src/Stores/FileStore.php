@@ -38,19 +38,24 @@ final class FileStore extends CacheStore
     ) {
         parent::__construct($prefix, $serializer);
 
-        $realDir = realpath($directory) ?: $directory;
-
-        // Prevent path traversal: reject if the resolved path differs from input
+        // Prevent path traversal: reject if the path contains '..' sequences
         if (str_contains($directory, '..')) {
             throw new \InvalidArgumentException(
                 'Cache directory must not contain path traversal sequences (..).',
             );
         }
 
-        $this->directory = rtrim($realDir, '/');
+        $this->directory = rtrim($directory, '/');
 
         if (!is_dir($this->directory)) {
             mkdir($this->directory, 0o755, true);
+        }
+
+        // Verify the resolved real path matches the intended directory
+        $realPath = realpath($this->directory);
+
+        if ($realPath !== false && $realPath !== $this->directory) {
+            $this->directory = $realPath;
         }
     }
 

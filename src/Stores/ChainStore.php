@@ -188,12 +188,12 @@ final class ChainStore extends CacheStore
                 break;
             }
 
-            $fetched = $store->getMultiple($remaining, null);
             $foundKeys = [];
             $foundValues = [];
 
-            foreach ($fetched as $key => $value) {
-                if ($value !== null) {
+            foreach ($remaining as $key) {
+                if ($store->has($key)) {
+                    $value = $store->get($key);
                     $results[$key] = $value;
                     $foundKeys[] = $key;
                     $foundValues[$key] = $value;

@@ -47,9 +47,6 @@ final class EncryptedSerializer implements CacheSerializerInterface
         } else {
             $this->key = substr($secret, 0, SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
         }
-
-        // Wipe the original secret from memory
-        sodium_memzero($secret);
     }
 
     public function serialize(mixed $value): string

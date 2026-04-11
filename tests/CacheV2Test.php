@@ -1115,8 +1115,7 @@ final class CacheV2Test extends TestCase
         $this->assertSame(2, $store->get('b'));
         $this->assertSame(3, $store->get('c'));
 
-        // Adding a 4th should evict 'a' (LRU, but 'a' was recently accessed via get)
-        // Actually 'a' was moved to end by get(), so 'b' is now oldest
+        // Adding a 4th should evict 'b' (LRU — 'a' was moved to end by get(), so 'b' is now oldest)
         $store->set('d', 4);
 
         $this->assertNull($store->get('b')); // 'b' was the oldest after 'a' was accessed
