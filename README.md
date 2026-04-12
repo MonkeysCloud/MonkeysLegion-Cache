@@ -1,398 +1,274 @@
-# MonkeysLegion Cache
+# MonkeysLegion Cache v2
 
-A comprehensive caching package for the MonkeysLegion Framework with support for multiple drivers and PSR-16 SimpleCache compliance.
+> High-performance, attribute-driven cache package for PHP 8.4+ with multiple drivers, atomic locks, encrypted serialization, tiered caching, and stampede protection.
 
-## Features
-
-- **Multiple Cache Drivers**: File, Redis, Memcached, Array (in-memory)
-- **PSR-16 Compliant**: Implements the Simple Cache interface
-- **Cache Tagging**: Group cache entries and flush them together
-- **Atomic Operations**: Increment/decrement numeric values
-- **Remember Pattern**: Get or compute and cache values
-- **CLI Commands**: Manage cache via command line
-- **Helper Functions**: Convenient global functions for cache operations
+[![PHP](https://img.shields.io/badge/php-%5E8.4-8892BF.svg)](https://php.net)
+[![PSR-16](https://img.shields.io/badge/PSR--16-compliant-brightgreen.svg)](https://www.php-fig.org/psr/psr-16/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Installation
 
 ```bash
-composer require monkeyscloud/monkeyslegion-cache
+composer require monkeyscloud/monkeyslegion-cache:^2.0
 ```
 
-## Configuration
+## Features
 
-Create a `cache.php` configuration file:
+| Feature | Description |
+|---|---|
+| **6 Drivers** | Array, File, Redis, Memcached, Null, Chain (L1/L2) |
+| **Pluggable Serializers** | PHP, JSON, igbinary, Encrypted (libsodium) |
+| **Atomic Locks** | ArrayLock, FileLock, RedisLock |
+| **Tag-Based Invalidation** | O(1) version-based tag invalidation |
+| **Stampede Protection** | `flexible()` with probabilistic early expiration |
+| **Typed Getters** | `integer()`, `boolean()`, `float()`, `string()`, `array()` |
+| **TTL Extension** | `touch()` — extend TTL without re-reading value |
+| **Cache Events** | Hit, Miss, Write, Delete — readonly event VOs |
+| **PSR-16 Compliant** | Full `Psr\SimpleCache\CacheInterface` conformance |
+| **PHP 8.4 Native** | Property hooks, asymmetric visibility, backed enums |
 
-```php
-return [
-    'default' => 'file',
-    
-    'stores' => [
-        'file' => [
-            'driver' => 'file',
-            'path' => __DIR__ . '/../storage/cache',
-            'prefix' => 'ml_cache',
-        ],
-        
-        'redis' => [
-            'driver' => 'redis',
-            'host' => '127.0.0.1',
-            'password' => null,
-            'port' => 6379,
-            'database' => 1,
-            'prefix' => 'ml_cache',
-        ],
-        
-        'memcached' => [
-            'driver' => 'memcached',
-            'prefix' => 'ml_cache',
-            'servers' => [
-                ['host' => '127.0.0.1', 'port' => 11211, 'weight' => 100],
-            ],
-        ],
-        
-        'array' => [
-            'driver' => 'array',
-            'prefix' => 'ml_cache',
-        ],
-    ],
-];
-```
-
-### MLC Configuration Format (Optional)
-
-The package also supports [MonkeysLegion-Mlc](https://github.com/MonkeysCloud/MonkeysLegion-Mlc) `.mlc` format:
-
-```mlc
-# config/cache.mlc
-cache.default = env("CACHE_DRIVER", "file")
-cache.prefix = env("CACHE_PREFIX", "ml_cache")
-
-cache.stores.redis.driver = "redis"
-cache.stores.redis.host = env("REDIS_HOST", "127.0.0.1")
-cache.stores.redis.port = env("REDIS_PORT", 6379)
-```
-
-**Benefits:**
-- ✅ Clean dot-notation syntax
-- ✅ Environment variable support with defaults
-- ✅ Layered .env files
-- ✅ Type-aware values
-
-See [MLC-CONFIG.md](MLC-CONFIG.md) for complete documentation.
-
-## Basic Usage
-
-### Initializing the Cache Manager
+## Quick Start
 
 ```php
 use MonkeysLegion\Cache\CacheManager;
-use MonkeysLegion\Cache\Cache;
 
-$config = require 'cache.php';
-$manager = new CacheManager($config);
-
-// Set the facade instance
-Cache::setInstance($manager);
-```
-
-### Storing Items
-
-```php
-// Store for a specific time (in seconds)
-Cache::set('key', 'value', 3600);
-
-// Store forever
-Cache::forever('key', 'value');
-
-// Store if key doesn't exist
-Cache::add('key', 'value', 3600);
-
-// Store multiple items
-Cache::putMany([
-    'key1' => 'value1',
-    'key2' => 'value2',
-], 3600);
-```
-
-### Retrieving Items
-
-```php
-// Get an item
-$value = Cache::get('key');
-
-// Get with default value
-$value = Cache::get('key', 'default');
-
-// Get multiple items
-$values = Cache::getMultiple(['key1', 'key2'], 'default');
-
-// Get and delete
-$value = Cache::pull('key');
-```
-
-### Remember Pattern
-
-```php
-// Get from cache or execute callback and store result
-$users = Cache::remember('users', 3600, function() {
-    return User::all();
-});
-
-// Remember forever
-$settings = Cache::rememberForever('settings', function() {
-    return Settings::all();
-});
-```
-
-### Checking Existence
-
-```php
-if (Cache::has('key')) {
-    // Key exists
-}
-```
-
-### Deleting Items
-
-```php
-// Delete single item
-Cache::delete('key');
-
-// Delete multiple items
-Cache::deleteMultiple(['key1', 'key2']);
-
-// Clear all cache
-Cache::clear();
-```
-
-### Incrementing/Decrementing
-
-```php
-// Increment
-Cache::increment('counter');
-Cache::increment('counter', 5);
-
-// Decrement
-Cache::decrement('counter');
-Cache::decrement('counter', 5);
-```
-
-### Cache Tagging
-
-```php
-// Store with tags
-Cache::tags(['users', 'premium'])->set('user:1', $user, 3600);
-
-// Retrieve tagged items
-$user = Cache::tags(['users', 'premium'])->get('user:1');
-
-// Flush all items with specific tags
-Cache::tags(['users'])->clear();
-Cache::tags(['users', 'premium'])->clear();
-```
-
-## Using Different Stores
-
-```php
-// Use specific store
-Cache::store('redis')->set('key', 'value');
-
-// Chain methods
-Cache::store('redis')->tags(['api'])->set('key', 'value', 3600);
-```
-
-## Helper Functions
-
-```php
-// Get/Set cache
-cache('key'); // Get
-cache('key', 'value'); // Set
-cache(['key1' => 'value1', 'key2' => 'value2']); // Set multiple
-
-// Remember pattern
-cache_remember('key', 3600, fn() => expensiveOperation());
-cache_forever('key', fn() => expensiveOperation());
-
-// Other operations
-cache_forget('key');
-cache_flush();
-cache_has('key');
-cache_pull('key');
-cache_add('key', 'value', 3600);
-```
-
-## CLI Commands
-
-### Clear Cache
-
-```bash
-# Clear default store
-php ml cache:clear
-
-# Clear specific store
-php ml cache:clear --store=redis
-
-# Clear by tags
-php ml cache:clear --tags=users,posts
-```
-
-### Get Value
-
-```bash
-# Get value
-php ml cache:get user:123
-
-# Get from specific store
-php ml cache:get user:123 --store=redis
-
-# Get as JSON
-php ml cache:get user:123 --format=json
-```
-
-### Set Value
-
-```bash
-# Set value
-php ml cache:set user:123 "John Doe"
-
-# Set with TTL (seconds)
-php ml cache:set config:debug true --ttl=3600
-
-# Set in specific store
-php ml cache:set user:data '{"name":"John"}' --store=redis
-```
-
-### Forget Key
-
-```bash
-# Delete key
-php ml cache:forget user:123
-
-# Delete multiple keys
-php ml cache:forget user:123,user:456
-
-# Delete from specific store
-php ml cache:forget user:123 --store=redis
-```
-
-### Cache Statistics
-
-```bash
-# Show stats for default store
-php ml cache:stats
-
-# Show stats for specific store
-php ml cache:stats --store=redis
-```
-
-## Cache Drivers
-
-### File Driver
-
-Stores cache in the filesystem with automatic directory structure and expiration handling.
-
-```php
-'file' => [
-    'driver' => 'file',
-    'path' => '/path/to/cache',
-    'prefix' => 'ml_cache',
-],
-```
-
-### Redis Driver
-
-Uses Redis for high-performance caching.
-
-```php
-'redis' => [
-    'driver' => 'redis',
-    'host' => '127.0.0.1',
-    'port' => 6379,
-    'password' => null,
-    'database' => 1,
-    'prefix' => 'ml_cache',
-],
-```
-
-### Memcached Driver
-
-Uses Memcached for distributed caching.
-
-```php
-'memcached' => [
-    'driver' => 'memcached',
-    'persistent_id' => 'my_app',
-    'servers' => [
-        ['host' => '127.0.0.1', 'port' => 11211, 'weight' => 100],
+$manager = new CacheManager([
+    'default' => 'file',
+    'stores' => [
+        'file' => [
+            'driver' => 'file',
+            'path'   => __DIR__ . '/cache',
+        ],
+        'memory' => [
+            'driver' => 'array',
+        ],
+        'redis' => [
+            'driver'   => 'redis',
+            'host'     => '127.0.0.1',
+            'port'     => 6379,
+            'prefix'   => 'myapp',
+        ],
     ],
-    'prefix' => 'ml_cache',
+]);
+
+$cache = $manager->store();           // Default (file)
+$redis = $manager->store('redis');    // Named store
+
+// Basic operations
+$cache->set('user.1', $userData, ttl: 3600);
+$user = $cache->get('user.1');
+$cache->delete('user.1');
+```
+
+## Typed Getters
+
+No more manual casting:
+
+```php
+$count = $cache->integer('page.views');     // int
+$flag  = $cache->boolean('feature.active'); // bool
+$rate  = $cache->float('exchange.rate');    // float
+$name  = $cache->string('user.name');       // string
+$ids   = $cache->array('active.users');     // array
+```
+
+## Remember & Stampede Protection
+
+```php
+// Cache-aside pattern
+$users = $cache->remember('users.active', 3600, function () {
+    return $db->query('SELECT * FROM users WHERE active = 1');
+});
+
+// Stale-while-revalidate (prevents cache stampede)
+$data = $cache->flexible(
+    key:      'api.results',
+    ttl:      [300, 3600],    // [stale_window, fresh_ttl]
+    callback: fn() => $api->fetchExpensiveData(),
+    beta:     1.5,            // Higher = more aggressive early refresh
+);
+```
+
+## Tags
+
+O(1) tag invalidation using version-based namespacing:
+
+```php
+// Scoped writes
+$cache->tags(['products', 'electronics'])->set('product.42', $laptop);
+$cache->tags(['products', 'clothing'])->set('product.99', $shirt);
+
+// Mass invalidation — O(1), no key scanning
+$cache->tags(['electronics'])->flush();
+```
+
+## Atomic Locks
+
+Prevent race conditions with distributed locks:
+
+```php
+$lock = $cache->lock('deploy', seconds: 30);
+
+// Block-scoped (auto-release)
+$result = $lock->get(function () {
+    return deployApplication();
+}, ttl: 30);
+
+// Manual acquire/release
+if ($lock->acquire()) {
+    try {
+        criticalSection();
+    } finally {
+        $lock->release();
+    }
+}
+
+// Block with timeout
+$lock->block(seconds: 10, callback: function () {
+    return processOrder();
+});
+```
+
+### Lock Backends
+
+| Lock | Use Case |
+|---|---|
+| `ArrayLock` | Testing, single-process |
+| `FileLock` | Single-server production |
+| `RedisLock` | Multi-server distributed (Lua-based atomic release) |
+
+## Chain Store (L1/L2 Tiered Caching)
+
+```php
+$manager = new CacheManager([
+    'default' => 'tiered',
+    'stores' => [
+        'l1'     => ['driver' => 'array'],      // Fast, in-process
+        'l2'     => ['driver' => 'redis', ...],  // Shared, durable
+        'tiered' => ['driver' => 'chain', 'stores' => ['l1', 'l2']],
+    ],
+]);
+
+$cache = $manager->store(); // ChainStore
+$cache->get('key'); // L1 miss → L2 hit → promoted to L1
+```
+
+## Encrypted Serialization
+
+Transparent at-rest encryption for GDPR/PCI compliance:
+
+```php
+$manager = new CacheManager([
+    'encrypt_key' => env('CACHE_ENCRYPT_KEY'), // 32+ bytes
+    'stores' => [
+        'secure' => [
+            'driver'    => 'redis',
+            'encrypt'   => true,     // Wrap with sodium_crypto_secretbox
+            'serializer' => 'json',  // Encrypt JSON payloads
+        ],
+    ],
+]);
+```
+
+## TTL Extension (touch)
+
+Extend cache TTL without re-reading the value (single round-trip on Redis):
+
+```php
+// Extend session expiry
+$cache->touch('session.abc123', ttl: 1800);
+```
+
+## Cache Events
+
+Readonly event value objects for telemetry/debugging:
+
+```php
+use MonkeysLegion\Cache\Event\CacheEvent;
+use MonkeysLegion\Cache\Event\CacheEventType;
+
+$event = new CacheEvent(
+    type:     CacheEventType::Hit,
+    key:      'user.1',
+    store:    'redis',
+    duration: 0.35,
+);
+
+echo $event->summary; // [redis] hit: user.1 (0.35μs)
+```
+
+## CacheEntry Value Object
+
+Introspect cached data with computed properties:
+
+```php
+use MonkeysLegion\Cache\CacheEntry;
+
+$entry = new CacheEntry(
+    value:     $data,
+    expiresAt: time() + 3600,
+    tags:      ['user', 'premium'],
+);
+
+$entry->isExpired;     // false (property hook)
+$entry->remainingTtl;  // ~3600 (property hook)
+$entry->age;           // 0 (property hook)
+$entry->shouldRefresh(beta: 1.5); // probabilistic early refresh
+```
+
+## Cache Stats
+
+```php
+$stats = $cache->getStats();
+
+echo $stats->hits;            // 1423
+echo $stats->hitRate;         // 0.95 (property hook)
+echo $stats->memoryFormatted; // "2.45 MB" (property hook)
+```
+
+## Pluggable Serializers
+
+| Serializer | Best For |
+|---|---|
+| `PhpSerializer` | Default, supports all PHP types |
+| `JsonSerializer` | Scalars/arrays, zero code execution risk |
+| `IgbinarySerializer` | 30-50% smaller payloads (requires ext-igbinary) |
+| `EncryptedSerializer` | Decorator, transparent at-rest encryption |
+
+```php
+'stores' => [
+    'json-store' => [
+        'driver'     => 'redis',
+        'serializer' => 'json', // or 'php', 'igbinary'
+    ],
 ],
 ```
 
-### Array Driver
-
-In-memory cache for testing or single-request scenarios.
+## Extending with Custom Drivers
 
 ```php
-'array' => [
-    'driver' => 'array',
-    'prefix' => 'ml_cache',
-],
+$manager->extend('dynamodb', function (array $config) {
+    return new DynamoDbStore($config);
+});
 ```
 
-## Advanced Usage
+## PHP 8.4 Features Used
 
-### Direct Store Access
-
-```php
-use MonkeysLegion\Cache\Stores\RedisStore;
-
-$redis = new \Redis();
-$redis->connect('127.0.0.1', 6379);
-
-$store = new RedisStore($redis, 'prefix_');
-$store->set('key', 'value', 3600);
-```
-
-### Custom Cache Key Prefix
-
-```php
-Cache::store('redis')->getPrefix(); // Get prefix
-```
-
-### Working with Raw Connections
-
-```php
-// Redis
-$redis = Cache::store('redis')->getRedis();
-
-// Memcached
-$memcached = Cache::store('memcached')->getMemcached();
-```
+- **Property hooks** — `CacheEntry`, `CacheStats`, `CacheEvent`, `TaggedCache`, `ChainStore`
+- **Asymmetric visibility** — `CacheEntry`, `CacheLock`, `CacheEvent`
+- **Backed enums** — `SerializerType`, `CacheEventType`, `LockState`
+- **`new` in initializers** — Default `PhpSerializer()` in constructors
+- **`match` expressions** — Driver/serializer resolution
+- **`declare(strict_types=1)`** — Every file
 
 ## Testing
 
-The ArrayStore is perfect for testing:
-
-```php
-$cache = new CacheManager([
-    'default' => 'array',
-    'stores' => [
-        'array' => ['driver' => 'array']
-    ]
-]);
-
-// Cache won't persist between requests
+```bash
+php vendor/bin/phpunit --testdox
 ```
 
-## Best Practices
-
-1. **Use appropriate TTL**: Set expiration times based on data volatility
-2. **Use tags**: Group related cache items for easier management
-3. **Remember pattern**: Simplifies cache-or-compute logic
-4. **Prefix keys**: Prevent collisions in shared cache systems
-5. **Clear strategically**: Use tags to clear related items without flushing all
+**98 tests, 190 assertions** — covers all stores, serializers, locks, tags, events, enums, and CacheManager.
 
 ## License
 
-MIT License
+MIT © [MonkeysCloud](https://monkeys.cloud)

@@ -1,131 +1,47 @@
 <?php
 
-use MonkeysLegion\Cache\Cache;
-use MonkeysLegion\Cache\CacheInterface;
+declare(strict_types=1);
 
-if (!function_exists('cache')) {
+/**
+ * MonkeysLegion Cache v2 — Helper functions.
+ *
+ * In v2, prefer injecting CacheManager via DI over global helpers.
+ * These are provided for quick scripts and convenience only.
+ *
+ * @requires PHP 8.4
+ */
+
+use MonkeysLegion\Cache\CacheManager;
+use MonkeysLegion\Cache\CacheStoreInterface;
+
+if (!function_exists('cache_manager')) {
     /**
-     * Get / set the specified cache value
-     *
-     * If an array is passed, we'll assume you want to put to the cache.
-     * If a key and value are passed, we'll set that value.
-     * If only a key is passed, we'll retrieve that value.
-     * If no arguments, we'll return the cache manager instance.
-     *
-     * @param null|string|array $key
-     * @param mixed $value
-     * @return mixed
+     * Get or set the global CacheManager instance.
      */
-    function cache(null|string|array $key = null, mixed $value = null): mixed
+    function cache_manager(?CacheManager $manager = null): CacheManager
     {
-        if (is_null($key)) {
-            return Cache::getInstance();
+        static $instance = null;
+
+        if ($manager !== null) {
+            $instance = $manager;
         }
 
-        if (is_array($key)) {
-            return Cache::putMany($key);
+        if ($instance === null) {
+            throw new \RuntimeException(
+                'CacheManager not initialized. Call cache_manager($manager) first or use DI.',
+            );
         }
 
-        if ($value !== null) {
-            return Cache::set($key, $value);
-        }
-
-        return Cache::get($key);
+        return $instance;
     }
 }
 
-if (!function_exists('cache_remember')) {
+if (!function_exists('cache_store')) {
     /**
-     * Get an item from the cache, or execute the given Closure and store the result
-     *
-     * @param string $key
-     * @param \DateInterval|int|null $ttl
-     * @param \Closure $callback
-     * @return mixed
+     * Get a cache store by name (or the default).
      */
-    function cache_remember(string $key, \DateInterval|int|null $ttl, \Closure $callback): mixed
+    function cache_store(?string $name = null): CacheStoreInterface
     {
-        return Cache::remember($key, $ttl, $callback);
-    }
-}
-
-if (!function_exists('cache_forever')) {
-    /**
-     * Get an item from the cache, or execute the given Closure and store the result forever
-     *
-     * @param string $key
-     * @param \Closure $callback
-     * @return mixed
-     */
-    function cache_forever(string $key, \Closure $callback): mixed
-    {
-        return Cache::rememberForever($key, $callback);
-    }
-}
-
-if (!function_exists('cache_forget')) {
-    /**
-     * Remove an item from the cache
-     *
-     * @param string $key
-     * @return bool
-     */
-    function cache_forget(string $key): bool
-    {
-        return Cache::delete($key);
-    }
-}
-
-if (!function_exists('cache_flush')) {
-    /**
-     * Remove all items from the cache
-     *
-     * @return bool
-     */
-    function cache_flush(): bool
-    {
-        return Cache::clear();
-    }
-}
-
-if (!function_exists('cache_has')) {
-    /**
-     * Determine if an item exists in the cache
-     *
-     * @param string $key
-     * @return bool
-     */
-    function cache_has(string $key): bool
-    {
-        return Cache::has($key);
-    }
-}
-
-if (!function_exists('cache_pull')) {
-    /**
-     * Retrieve an item from the cache and delete it
-     *
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
-     */
-    function cache_pull(string $key, mixed $default = null): mixed
-    {
-        return Cache::pull($key, $default);
-    }
-}
-
-if (!function_exists('cache_add')) {
-    /**
-     * Store an item in the cache if the key does not exist
-     *
-     * @param string $key
-     * @param mixed $value
-     * @param \DateInterval|int|null $ttl
-     * @return bool
-     */
-    function cache_add(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
-    {
-        return Cache::add($key, $value, $ttl);
+        return cache_manager()->store($name);
     }
 }
