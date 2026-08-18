@@ -168,8 +168,8 @@ final class CacheManager
     {
         $redis   = new \Redis();
         $host    = $config['host'] ?? '127.0.0.1';
-        $port    = $config['port'] ?? 6379;
-        $timeout = $config['timeout'] ?? 0.0;
+        $port    = (int) ($config['port'] ?? 6379);
+        $timeout = (float) ($config['timeout'] ?? 0.0);
 
         $redis->connect($host, $port, $timeout);
 
